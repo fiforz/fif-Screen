@@ -16,6 +16,7 @@ class HostServer {
   int run();
 
  private:
+  void run_adb_reverse_maintainer();
   void run_control_channel();
   void run_video_channel();
 
@@ -23,4 +24,3 @@ class HostServer {
 };
 
 }  // namespace fif::host
-

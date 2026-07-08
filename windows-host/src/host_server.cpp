@@ -22,9 +22,9 @@ namespace fif::host {
 namespace {
 
 struct VideoMode {
-  int width = 1920;
-  int height = 1080;
-  int fps = 30;
+  int width = 1600;
+  int height = 900;
+  int fps = 60;
 };
 
 struct DirtyPayload {
@@ -201,13 +201,10 @@ std::string make_hello_ack_json(std::uint16_t control_port, std::uint16_t video_
 
 int HostServer::run() {
   WinsockRuntime winsock;
-  AdbReverseManager adb;
 
   if (config_.setup_adb_reverse) {
-    if (!adb.setup({config_.control_port, config_.video_port})) {
-      std::cerr << "adb reverse setup failed; use --no-adb for local loopback testing\n";
-      return 2;
-    }
+    std::thread adb_reverse([this] { run_adb_reverse_maintainer(); });
+    adb_reverse.detach();
   }
 
   std::thread control([this] { run_control_channel(); });
@@ -216,11 +213,23 @@ int HostServer::run() {
   control.join();
   video.join();
 
-  if (config_.setup_adb_reverse) {
-    adb.remove({config_.control_port, config_.video_port});
-  }
-
   return 0;
+}
+
+void HostServer::run_adb_reverse_maintainer() {
+  AdbReverseManager adb;
+  bool configured = false;
+  for (;;) {
+    const bool ok = adb.setup({config_.control_port, config_.video_port});
+    if (ok && !configured) {
+      std::cout << "adb reverse configured for Android reconnect\n";
+    }
+    if (!ok && configured) {
+      std::cout << "adb reverse lost; waiting for Android device\n";
+    }
+    configured = ok;
+    std::this_thread::sleep_for(ok ? std::chrono::seconds(5) : std::chrono::seconds(2));
+  }
 }
 
 void HostServer::run_control_channel() {

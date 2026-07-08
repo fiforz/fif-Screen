@@ -56,16 +56,16 @@ bool AdbReverseManager::setup(const AdbReverseConfig& config) const {
 
   const std::string adb = adb_command();
   std::ostringstream control;
-  control << adb << " reverse tcp:" << config.control_port << " tcp:" << config.control_port;
+  control << adb << " reverse tcp:" << config.control_port << " tcp:" << config.control_port
+          << " >nul 2>nul";
   if (std::system(control.str().c_str()) != 0) {
-    std::cerr << "failed to configure adb reverse for control port\n";
     return false;
   }
 
   std::ostringstream video;
-  video << adb << " reverse tcp:" << config.video_port << " tcp:" << config.video_port;
+  video << adb << " reverse tcp:" << config.video_port << " tcp:" << config.video_port
+        << " >nul 2>nul";
   if (std::system(video.str().c_str()) != 0) {
-    std::cerr << "failed to configure adb reverse for video port\n";
     return false;
   }
 

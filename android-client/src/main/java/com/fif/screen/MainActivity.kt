@@ -4,6 +4,8 @@ import android.app.Activity
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
@@ -28,7 +30,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private var executor: ExecutorService? = null
     private var client: StreamClient? = null
     private var surfaceReady = false
-    private var autoStartRequested = false
+    private var desiredRunning = true
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -140,20 +143,24 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     private fun toggleClient() {
         if (client == null) {
+            desiredRunning = true
             startClient()
         } else {
+            desiredRunning = false
             stopClient()
         }
     }
 
     private fun maybeAutoStart() {
-        if (!autoStartRequested && surfaceReady && client == null) {
-            autoStartRequested = true
+        if (desiredRunning && surfaceReady && client == null && executor == null) {
             surfaceView.post { startClient() }
         }
     }
 
     private fun startClient() {
+        if (client != null || executor != null) {
+            return
+        }
         if (!surfaceReady) {
             statusView.text = "Surface not ready"
             FifLog.surface("event" to "start_rejected", "reason" to "surface_not_ready")
@@ -182,6 +189,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                         executor = null
                         toggleButton.text = "Start"
                         statusView.text = "Disconnected"
+                        if (desiredRunning && surfaceReady) {
+                            statusView.text = "Reconnecting"
+                            mainHandler.postDelayed({ maybeAutoStart() }, RECONNECT_DELAY_MS)
+                        }
                     }
                     service.shutdown()
                 }
@@ -192,6 +203,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     private fun stopClient() {
         FifLog.network("event" to "client_stop_requested")
+        mainHandler.removeCallbacksAndMessages(null)
         client?.stop()
         client = null
         executor?.shutdownNow()
@@ -209,4 +221,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             @Suppress("DEPRECATION")
             windowManager.defaultDisplay.refreshRate
         }
+
+    private companion object {
+        const val RECONNECT_DELAY_MS = 500L
+    }
 }
