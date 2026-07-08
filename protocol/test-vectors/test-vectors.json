@@ -1,0 +1,32 @@
+﻿[
+    {
+        "file":  "hello.bin",
+        "type":  1,
+        "sequence":  1,
+        "timestampNs":  1000000000,
+        "flags":  0,
+        "payloadUtf8":  "{\"role\":\"android-client\",\"protocol\":1}",
+        "payloadLength":  38,
+        "hex":  "464946310100010026000000010000000000000000ca9a3b00000000000000007b22726f6c65223a22616e64726f69642d636c69656e74222c2270726f746f636f6c223a317d"
+    },
+    {
+        "file":  "hello_ack.bin",
+        "type":  2,
+        "sequence":  2,
+        "timestampNs":  1000001000,
+        "flags":  0,
+        "payloadUtf8":  "{\"role\":\"windows-host\",\"protocol\":1,\"controlPort\":27183,\"videoPort\":27184}",
+        "payloadLength":  74,
+        "hex":  "46494631010002004a0000000200000000000000e8cd9a3b00000000000000007b22726f6c65223a2277696e646f77732d686f7374222c2270726f746f636f6c223a312c22636f6e74726f6c506f7274223a32373138332c22766964656f506f7274223a32373138347d"
+    },
+    {
+        "file":  "video_header.bin",
+        "type":  101,
+        "sequence":  3,
+        "timestampNs":  1000002000,
+        "flags":  2,
+        "payloadUtf8":  "",
+        "payloadLength":  0,
+        "hex":  "4649463101006500000000000300000000000000d0d19a3b0000000002000000"
+    }
+]

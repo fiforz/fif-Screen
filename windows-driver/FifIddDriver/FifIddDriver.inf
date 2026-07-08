@@ -1,0 +1,63 @@
+[Version]
+PnpLockDown=1
+Signature="$Windows NT$"
+ClassGUID={4D36E968-E325-11CE-BFC1-08002BE10318}
+Class=Display
+ClassVer=2.0
+Provider=%ManufacturerName%
+CatalogFile=FifIddDriver.cat
+DriverVer=
+
+[Manufacturer]
+%ManufacturerName%=Standard,NT$ARCH$.10.0...22000
+
+[Standard.NT$ARCH$.10.0...22000]
+%DeviceName%=FifIddDriver_Install, Root\FifScreenIdd
+%DeviceName%=FifIddDriver_Install, FifIddDriver
+
+[SourceDisksFiles]
+FifIddDriver.dll=1
+
+[SourceDisksNames]
+1=%DiskName%
+
+[FifIddDriver_Install.NT]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT
+CopyFiles=UMDriverCopy
+
+[FifIddDriver_Install.NT.hw]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT.HW
+AddReg=FifIddDriver_HardwareDeviceSettings
+
+[FifIddDriver_HardwareDeviceSettings]
+HKR,, "UpperFilters", %REG_MULTI_SZ%, "IndirectKmd"
+HKR, "WUDF", "DeviceGroupId", %REG_SZ%, "FifScreenIddGroup"
+
+[FifIddDriver_Install.NT.Services]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT.Services
+
+[FifIddDriver_Install.NT.Wdf]
+UmdfService=FifIddDriver,FifIddDriver_UmdfService
+UmdfServiceOrder=FifIddDriver
+UmdfKernelModeClientPolicy=AllowKernelModeClients
+
+[FifIddDriver_UmdfService]
+UmdfLibraryVersion=$UMDFVERSION$
+ServiceBinary=%12%\UMDF\FifIddDriver.dll
+UmdfExtensions=IddCx0102
+
+[DestinationDirs]
+UMDriverCopy=12,UMDF
+
+[UMDriverCopy]
+FifIddDriver.dll
+
+[Strings]
+ManufacturerName="FifScreen"
+DiskName="FifScreen Idd Driver Installation Disk"
+DeviceName="FifScreen Indirect Display"
+REG_MULTI_SZ=0x00010000
+REG_SZ=0x00000000

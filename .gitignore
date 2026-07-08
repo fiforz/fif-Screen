@@ -1,0 +1,66 @@
+# Local dependency/tool caches
+tools/
+windows-driver/packages/
+
+# Android local state and outputs
+.gradle/
+.kotlin/
+local.properties
+android-client/build/
+*.apk
+*.aab
+
+# CMake and native build outputs
+build/
+out/
+bin/
+obj/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.exe
+*.dll
+*.pdb
+*.lib
+*.exp
+*.obj
+
+# WDK/Visual Studio generated output
+windows-driver/FifIddDriver/x64/
+windows-driver/FifIddDriver/ARM64/
+windows-driver/FifIddDriver/Win32/
+windows-driver/FifIddDriver/Debug/
+windows-driver/FifIddDriver/Release/
+*.tlog/
+*.recipe
+*.vcxproj.user
+*.user
+*.suo
+.vs/
+.idea/
+
+# Driver signing/generated package material
+*.cat
+*.cer
+*.pfx
+*.p12
+*.pvk
+*.key
+*.pem
+*.jks
+*.keystore
+
+# Local audit snapshots and logs
+artifacts/
+*.log
+*.tmp
+*.temp
+*.dmp
+*.dump
+
+# Local secret/config files
+.env
+.env.*
+*credential*
+*credentials*
+*secret*
