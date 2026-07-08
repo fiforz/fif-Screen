@@ -9,9 +9,9 @@ CatalogFile=FifIddDriver.cat
 DriverVer=
 
 [Manufacturer]
-%ManufacturerName%=Standard,NT$ARCH$.10.0...22000
+%ManufacturerName%=Standard,NT$ARCH$.10.0
 
-[Standard.NT$ARCH$.10.0...22000]
+[Standard.NT$ARCH$.10.0]
 %DeviceName%=FifIddDriver_Install, Root\FifScreenIdd
 %DeviceName%=FifIddDriver_Install, FifIddDriver
 
@@ -22,22 +22,25 @@ FifIddDriver.dll=1
 1=%DiskName%
 
 [FifIddDriver_Install.NT]
-Include=WUDFRD.inf
-Needs=WUDFRD.NT
 CopyFiles=UMDriverCopy
 
 [FifIddDriver_Install.NT.hw]
-Include=WUDFRD.inf
-Needs=WUDFRD.NT.HW
 AddReg=FifIddDriver_HardwareDeviceSettings
 
 [FifIddDriver_HardwareDeviceSettings]
 HKR,, "UpperFilters", %REG_MULTI_SZ%, "IndirectKmd"
 HKR, "WUDF", "DeviceGroupId", %REG_SZ%, "FifScreenIddGroup"
+HKR,,Security,,"D:P(A;;GA;;;BA)(A;;GA;;;SY)(A;;GA;;;UD)"
 
 [FifIddDriver_Install.NT.Services]
-Include=WUDFRD.inf
-Needs=WUDFRD.NT.Services
+AddService=WUDFRd,0x000001fa,WUDFRD_ServiceInstall
+
+[WUDFRD_ServiceInstall]
+DisplayName=%WudfRdDisplayName%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%12%\WUDFRd.sys
 
 [FifIddDriver_Install.NT.Wdf]
 UmdfService=FifIddDriver,FifIddDriver_UmdfService
@@ -59,5 +62,6 @@ FifIddDriver.dll
 ManufacturerName="FifScreen"
 DiskName="FifScreen Idd Driver Installation Disk"
 DeviceName="FifScreen Indirect Display"
+WudfRdDisplayName="Windows Driver Foundation - User-mode Driver Framework Reflector"
 REG_MULTI_SZ=0x00010000
 REG_SZ=0x00000000

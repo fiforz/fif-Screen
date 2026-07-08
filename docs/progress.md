@@ -36,6 +36,7 @@ Date: 2026-07-08
   - `docs/software-device-launcher-audit.md`
   - `docs/software-device-launcher-audit-v2.md`
   - `docs/software-device-create.md`
+  - `docs/software-device-create-runtime.md`
 
 ## COMPILED
 
@@ -170,6 +171,24 @@ Date: 2026-07-08
   - FifScreen software device is still not present.
   - FifScreen virtual monitor is still not present.
   - `FifIddDeviceLauncher create` was not executed.
+- Software Device Create Runtime Gate executed:
+  - local Launcher V2 baseline commit was created: `0c23ea8b1eae76dfb5e35d33fc2eea370ddf71ae`.
+  - exactly one `FifIddDeviceLauncher create` was started.
+  - owner PID is `13844`.
+  - owner process remained running at the end of this gate.
+  - callback/create success was observed via launcher state.
+  - actual instance ID is `SWD\FIFSCREENIDD\FIFIDDDRIVER`.
+  - software device is present while owner is running.
+  - device remained present after 5 seconds with unchanged instance ID.
+  - driver binding failed: no `oem95.inf` binding was recorded on the devnode.
+  - DevNode status is `0x1806400`.
+  - Problem Code is `28` (`CM_PROB_FAILED_INSTALL`).
+  - Kernel-PnP configured the device with driver name `null`.
+  - DeviceSetupManager delayed 50 seconds on driver query/download/install for the device.
+  - SetupAPI.dev.log had no new bytes after the recorded pre-create offset.
+  - FifScreen display adapter did not appear.
+  - FifScreen virtual monitor did not appear.
+  - no remove, stop, owner termination, device restart, driver restage, display mode change, BCD change, certificate change, reboot, or second create was executed.
 
 ## HARDWARE VERIFIED
 
@@ -201,14 +220,15 @@ Date: 2026-07-08
 
 Not claimed:
 
-- Windows driver loaded is not claimed because no FifScreen software device has been created or bound.
-- Windows virtual monitor is not claimed because no FifScreen software device has been created and no FifScreen display device is present.
+- Windows driver loaded is not claimed because the created FifScreen software device did not bind to `oem95.inf`.
+- Windows virtual monitor is not claimed because no FifScreen monitor device appeared.
+- Virtual extended desktop is not claimed or verified.
 
 ## BLOCKED BY HUMAN ACTION
 
-- `READY_FOR_SOFTWARE_DEVICE_CREATE_GATE_V2`: FifIddDriver package is staged in Driver Store and launcher V2 pre-create audit passed; creating the software device still requires explicit approval.
+- `DRIVER_BINDING_FAILED`: first real software device create succeeded, but the devnode did not bind to `oem95.inf` and has Problem Code 28.
 - `RECOVERY_KEY_CONFIRMED_BY_USER=NO`: no BitLocker recovery key was requested, displayed, saved, or confirmed.
-- Virtual Monitor verification is still blocked until after Software Device create and driver binding.
+- Virtual Monitor verification is blocked until driver binding succeeds.
 
 Driver modifications executed:
 
@@ -217,11 +237,51 @@ Certificate stores changed: YES, exact public WDKTestCert only
 BCD TESTSIGNING changed: YES
 Driver package staged in Driver Store: YES, oem95.inf
 Driver loaded: NO
-Software device created: NO
+Software device created: YES, SWD\FIFSCREENIDD\FIFIDDDRIVER
+Owner process running: YES, PID 13844
+Driver bound: NO
+Device started: NO
+Problem code: 28, CM_PROB_FAILED_INSTALL
 Virtual monitor verified: NO
 Post-reboot read-only check: PASS
 Driver package stage: PASS
 Software device pre-create audit V1: FAILED
 Software device pre-create audit V2: PASS
-Current stop state: READY_FOR_SOFTWARE_DEVICE_CREATE_GATE_V2
+Software device create runtime gate: DRIVER_BINDING_FAILED
+Current stop state: DRIVER_BINDING_FAILED
 ```
+
+## VERTICAL SLICE UPDATE - 2026-07-08 15:12
+
+Supersedes the earlier `DRIVER_BINDING_FAILED` stop state.
+
+What works:
+
+- `FifScreen Indirect Display` binds to `oem95.inf`.
+- Driver provider is `FifScreen`.
+- Device service is `WUDFRd`.
+- Device status is `Started`.
+- Problem Code is `0`.
+- Windows Display class includes `FifScreen Indirect Display`.
+- Current reported FifScreen resolution is `1920x1080`.
+- IddCx adapter initialization succeeds.
+- IddCx monitor creation succeeds.
+- IddCx monitor arrival succeeds.
+- Swapchain assignment succeeds.
+- Swapchain worker sets the D3D device and processes the first frame.
+
+What failed and was fixed:
+
+- Code 28 root cause: INF models section targeted Windows 11 build 22000+, excluding this Windows 10 19045 machine.
+- Code 1 root cause: `Include=WUDFRD.inf` is not valid on this machine because `WUDFRD.inf` is absent.
+- Code 31 root cause: missing `EvtIddCxParseMonitorDescription` caused `IddCxDeviceInitConfig` to return `STATUS_INVALID_PARAMETER`.
+- Swapchain churn root cause: `EvtIddCxMonitorAssignSwapChain` immediately deleted the assigned swapchain.
+
+Current blocker:
+
+- `HUMAN_GATE_DISPLAY_VISUAL_CONFIRMATION`: user must visually confirm Windows display settings and window movement behavior.
+
+Next action after confirmation:
+
+- Verify the FifScreen target can be used as an extended desktop target.
+- Continue into capture, H.264 encode, ADB transport, and Android decode/display.
