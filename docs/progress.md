@@ -30,6 +30,12 @@ Date: 2026-07-08
   - `docs/device-launcher-build.md`
   - `docs/driver-test-mode-gate.md`
   - `docs/driver-gate-checkpoint.md`
+- Driver Package Stage docs:
+  - `docs/driver-package-stage.md`
+- Software Device Create Gate docs:
+  - `docs/software-device-launcher-audit.md`
+  - `docs/software-device-launcher-audit-v2.md`
+  - `docs/software-device-create.md`
 
 ## COMPILED
 
@@ -54,7 +60,7 @@ Date: 2026-07-08
   - SHA-256: `D2E2F5A99648884B22F5109FF308BB340F0BA4453D5F58B3D660120581008F81`
 - FifScreen IDD software device launcher:
   - `build/stage-driver-gate-clean/windows-driver/FifIddDeviceLauncher/fif-idd-device-launcher.exe`
-  - SHA-256: `89D93836A6A2580FF0021968BDD76F17E772C26398903B6ED105699BA5A57A79`
+  - SHA-256: `3C6D7E8CD84608E3630B7F2001DE027D3058BFB958C9D05E4CA0A47D8F8343D5`
 
 ## EXECUTED
 
@@ -123,6 +129,47 @@ Date: 2026-07-08
   - FifScreen virtual monitor is not present.
   - launcher `status` reports `fifscreen_software_device_present=false`.
   - hardware ID match is proven.
+- Driver Package Stage executed:
+  - exact command: `pnputil /add-driver "D:\Documents\fif-Screen\windows-driver\FifIddDriver\x64\Debug\FifIddDriver\FifIddDriver.inf"`.
+  - no wildcard, `/subdirs`, `/install`, `/reboot`, or `/delete-driver` was used.
+  - exit code: `0`.
+  - published Driver Store package: `oem95.inf`.
+  - Original Name: `fifidddriver.inf`.
+  - Provider: `FifScreen`.
+  - Signer: `WDKTestCert 29989,134279100762949792`.
+  - Driver Store changed only by adding the expected FifIddDriver package.
+  - FifScreen software device is still not present.
+  - FifScreen virtual monitor is still not present.
+  - launcher `status` still reports `fifscreen_software_device_present=false`.
+- Software Device Create Gate pre-create audit executed:
+  - launcher `status` reports `fifscreen_software_device_present=false`.
+  - PnP enumeration found no existing FifScreen software device.
+  - callback wait is implemented with a 10000 ms timeout.
+  - callback CreateResult is checked.
+  - callback actual Device Instance ID capture is implemented.
+  - current create lifetime mode is handle-held.
+  - `SwDeviceSetLifetime(SwDeviceLifetimeParentPresent)` is not used.
+  - device survival after launcher process exit is not proven.
+  - duplicate create protection is not implemented.
+  - rollback is not strictly proven for this gate.
+  - `FifIddDeviceLauncher create` was not executed.
+- Software Device Create Gate pre-create audit V2 executed:
+  - `FifIddDeviceLauncher` was refactored into a handle-lifetime owner process.
+  - `SwDeviceSetLifetime(SwDeviceLifetimeHandle)` is explicitly called after callback success.
+  - `SwDeviceLifetimeParentPresent` is not used.
+  - strict owner mutex is implemented: `Local\FifScreenIddOwnerMutex`.
+  - stop channel is implemented: `Local\FifScreenIddStopEvent`.
+  - direct SetupDi/DIF remove path was removed from launcher `remove`.
+  - duplicate create decision matrix is implemented and covered by launcher `selftest`.
+  - failure cleanup closes `HSWDEVICE` and waits up to 15000 ms for PnP disappearance.
+  - launcher clean build passed.
+  - launcher `selftest` passed all four duplicate-state cases.
+  - launcher `status` reports `owner_running=false`, `fifscreen_software_device_present=false`, `actual_instance_id=NOT_CREATED`.
+  - Driver Store package remains `oem95.inf`.
+  - FifIddDriver DLL/INF/CAT hashes remain unchanged.
+  - FifScreen software device is still not present.
+  - FifScreen virtual monitor is still not present.
+  - `FifIddDeviceLauncher create` was not executed.
 
 ## HARDWARE VERIFIED
 
@@ -154,23 +201,27 @@ Date: 2026-07-08
 
 Not claimed:
 
-- Windows virtual monitor is not claimed because FifIddDriver was not installed.
+- Windows driver loaded is not claimed because no FifScreen software device has been created or bound.
+- Windows virtual monitor is not claimed because no FifScreen software device has been created and no FifScreen display device is present.
 
 ## BLOCKED BY HUMAN ACTION
 
-- `READY_FOR_DRIVER_INSTALL_GATE`: post-reboot read-only gate passed; driver installation still requires explicit approval.
+- `READY_FOR_SOFTWARE_DEVICE_CREATE_GATE_V2`: FifIddDriver package is staged in Driver Store and launcher V2 pre-create audit passed; creating the software device still requires explicit approval.
 - `RECOVERY_KEY_CONFIRMED_BY_USER=NO`: no BitLocker recovery key was requested, displayed, saved, or confirmed.
-- FifIddDriver package install is still blocked until explicit driver install authorization.
-- Software Device create is still blocked until after reboot and Driver Package Install Gate.
+- Virtual Monitor verification is still blocked until after Software Device create and driver binding.
 
 Driver modifications executed:
 
 ```text
 Certificate stores changed: YES, exact public WDKTestCert only
 BCD TESTSIGNING changed: YES
-Driver package installed: NO
+Driver package staged in Driver Store: YES, oem95.inf
+Driver loaded: NO
 Software device created: NO
 Virtual monitor verified: NO
 Post-reboot read-only check: PASS
-Current stop state: READY_FOR_DRIVER_INSTALL_GATE
+Driver package stage: PASS
+Software device pre-create audit V1: FAILED
+Software device pre-create audit V2: PASS
+Current stop state: READY_FOR_SOFTWARE_DEVICE_CREATE_GATE_V2
 ```

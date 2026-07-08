@@ -96,8 +96,100 @@ docs/post-reboot-read-only-check.md
 docs/hardware-id-match-audit.md
 ```
 
+## DRIVER PACKAGE STAGE
+
+Executed after Git baseline:
+
+```text
+Git baseline head=bd37e0faed7c329c432c6046425a12d64e12e4f5
+Command=pnputil /add-driver "D:\Documents\fif-Screen\windows-driver\FifIddDriver\x64\Debug\FifIddDriver\FifIddDriver.inf"
+Exit code=0
+Published Name=oem95.inf
+Original Name=fifidddriver.inf
+Provider=FifScreen
+Signer=WDKTestCert 29989,134279100762949792
+Unexpected Driver Store change=NO
+Software Device present=NO
+Virtual Monitor present=NO
+Reboot required=NO
+DRIVER_PACKAGE_STAGE=PASS
+```
+
+Detailed report:
+
+```text
+docs/driver-package-stage.md
+```
+
+## SOFTWARE DEVICE CREATE PRE-AUDIT
+
+Executed before any software device create:
+
+```text
+Driver package=oem95.inf
+Launcher hash=89D93836A6A2580FF0021968BDD76F17E772C26398903B6ED105699BA5A57A79
+Launcher status=fifscreen_software_device_present=false
+PnP FifScreen software device present=NO
+Lifetime mode=HANDLE
+SwDeviceLifetimeParentPresent used=NO
+Callback wait implemented=YES
+Callback timeout=10000 ms
+CreateResult checked=YES
+Actual Device Instance ID capture implemented=YES
+Device survival after launcher process exit proven=NO
+Duplicate create protection=NO
+Rollback strictly proven=NO
+Software device create executed=NO
+PRECREATE_AUDIT=FAILED
+```
+
+Detailed reports:
+
+```text
+docs/software-device-launcher-audit.md
+```
+
+## SOFTWARE DEVICE CREATE PRE-AUDIT V2
+
+Executed before any software device create:
+
+```text
+Driver package=oem95.inf
+Launcher old hash=89D93836A6A2580FF0021968BDD76F17E772C26398903B6ED105699BA5A57A79
+Launcher new hash=3C6D7E8CD84608E3630B7F2001DE027D3058BFB958C9D05E4CA0A47D8F8343D5
+Launcher status=owner_running=false; fifscreen_software_device_present=false; actual_instance_id=NOT_CREATED
+PnP FifScreen software device present=NO
+PnP FifScreen virtual monitor present=NO
+Lifetime mode=SwDeviceLifetimeHandle
+SwDeviceSetLifetime(SwDeviceLifetimeHandle)=YES
+SwDeviceLifetimeParentPresent used=NO
+Owner process required=YES
+Owner mutex=Local\FifScreenIddOwnerMutex
+Stop channel=Local\FifScreenIddStopEvent
+Duplicate create protection=YES
+Rollback statically proven=YES
+Direct SetupDi/DIF remove path=NO
+Callback wait implemented=YES
+Callback timeout=10000 ms
+CreateResult checked=YES
+Actual Device Instance ID capture implemented=YES
+Launcher selftest=PASS
+Launcher build=PASS
+Driver package files unchanged=YES
+Software device create executed=NO
+Software device remove executed=NO
+PRECREATE_AUDIT_V2=PASS
+```
+
+Detailed report:
+
+```text
+docs/software-device-launcher-audit-v2.md
+docs/software-device-create.md
+```
+
 ## STOP STATE
 
 ```text
-READY_FOR_DRIVER_INSTALL_GATE
+READY_FOR_SOFTWARE_DEVICE_CREATE_GATE_V2
 ```
