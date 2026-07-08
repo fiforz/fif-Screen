@@ -4,7 +4,6 @@ import android.app.Activity
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
-import android.view.Gravity
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
@@ -85,6 +84,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(0x66000000)
             setPadding(16, 12, 16, 12)
+            visibility = View.GONE
             addView(statusView)
             addView(statsView)
             addView(toggleButton)
@@ -102,8 +102,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             overlay,
             FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP or Gravity.START
+                FrameLayout.LayoutParams.WRAP_CONTENT
             )
         )
         setContentView(root)

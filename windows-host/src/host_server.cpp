@@ -8,7 +8,9 @@
 #include <fif/protocol.hpp>
 
 #include <atomic>
+#include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -17,6 +19,48 @@
 namespace fif::host {
 
 namespace {
+
+struct VideoMode {
+  int width = 960;
+  int height = 540;
+  int fps = 30;
+};
+
+int env_int(const char* name, int fallback, int min_value, int max_value) {
+  const char* raw = std::getenv(name);
+  if (!raw || raw[0] == '\0') {
+    return fallback;
+  }
+  try {
+    const int parsed = std::stoi(raw);
+    return std::clamp(parsed, min_value, max_value);
+  } catch (...) {
+    return fallback;
+  }
+}
+
+VideoMode selected_video_mode() {
+  VideoMode mode;
+  mode.width = env_int("FIF_VIDEO_WIDTH", mode.width, 320, 1920);
+  mode.height = env_int("FIF_VIDEO_HEIGHT", mode.height, 180, 1080);
+  mode.fps = env_int("FIF_VIDEO_FPS", mode.fps, 1, 60);
+  return mode;
+}
+
+std::vector<std::uint8_t> rgba_to_rgb565(const RawFrame& frame) {
+  std::vector<std::uint8_t> out;
+  out.resize(static_cast<std::size_t>(frame.width) * frame.height * 2);
+  std::size_t dst = 0;
+  for (std::size_t src = 0; src + 3 < frame.rgba.size(); src += 4) {
+    const std::uint16_t r = frame.rgba[src + 0] >> 3;
+    const std::uint16_t g = frame.rgba[src + 1] >> 2;
+    const std::uint16_t b = frame.rgba[src + 2] >> 3;
+    const std::uint16_t pixel = static_cast<std::uint16_t>((r << 11) | (g << 5) | b);
+    out[dst++] = static_cast<std::uint8_t>(pixel & 0xff);
+    out[dst++] = static_cast<std::uint8_t>((pixel >> 8) & 0xff);
+  }
+  return out;
+}
 
 std::vector<std::uint8_t> make_json_payload(const std::string& json) {
   return fif::bytes_from_string(json);
@@ -32,11 +76,14 @@ std::vector<std::uint8_t> make_packet(fif::MessageType type,
 }
 
 std::string make_hello_ack_json(std::uint16_t control_port, std::uint16_t video_port) {
+  const VideoMode mode = selected_video_mode();
   std::ostringstream json;
   json << "{\"role\":\"windows-host\",\"protocol\":1,\"controlPort\":" << control_port
        << ",\"videoPort\":" << video_port
-       << ",\"selectedMode\":{\"width\":640,\"height\":360,\"refreshHz\":10}"
-       << ",\"codec\":{\"mime\":\"application/fif-raw-rgba\",\"lowLatency\":true}}";
+       << ",\"selectedMode\":{\"width\":" << mode.width
+       << ",\"height\":" << mode.height
+       << ",\"refreshHz\":" << mode.fps << "}"
+       << ",\"codec\":{\"mime\":\"application/fif-raw-rgb565\",\"lowLatency\":true}}";
   return json.str();
 }
 
@@ -167,16 +214,15 @@ void HostServer::run_video_channel() {
       }
     }
 
-    constexpr int kOutputWidth = 640;
-    constexpr int kOutputHeight = 360;
-    constexpr int kFps = 10;
-    GdiScreenCapturer capturer(*target, kOutputWidth, kOutputHeight);
+    const VideoMode mode = selected_video_mode();
+    GdiScreenCapturer capturer(*target, mode.width, mode.height);
 
     std::uint64_t sequence = 1;
     std::ostringstream config;
-    config << "{\"codec\":\"raw-rgba\",\"width\":" << kOutputWidth
-           << ",\"height\":" << kOutputHeight
-           << ",\"fps\":" << kFps
+    config << "{\"codec\":\"raw-rgb565\",\"width\":" << mode.width
+           << ",\"height\":" << mode.height
+           << ",\"fps\":" << mode.fps
+           << ",\"bytesPerPixel\":2"
            << ",\"sourceDisplay\":\"" << narrow(target->device_string)
            << "\",\"sourceWidth\":" << target->width
            << ",\"sourceHeight\":" << target->height << "}";
@@ -194,7 +240,7 @@ void HostServer::run_video_channel() {
     std::uint64_t frames_sent = 0;
     std::uint64_t bytes_sent = 0;
     auto last_stats = std::chrono::steady_clock::now();
-    const auto frame_interval = std::chrono::milliseconds(1000 / kFps);
+    const auto frame_interval = std::chrono::microseconds(1'000'000 / mode.fps);
 
     while (client.valid()) {
       const auto frame_start = std::chrono::steady_clock::now();
@@ -215,7 +261,8 @@ void HostServer::run_video_channel() {
       fif::PacketHeader frame_header;
       frame_header.type = fif::MessageType::VideoFrame;
       frame_header.sequence = sequence++;
-      const auto packet = fif::encode_packet(frame_header, frame.rgba);
+      const auto payload = rgba_to_rgb565(frame);
+      const auto packet = fif::encode_packet(frame_header, payload);
       if (!client.send_all(packet)) {
         std::cout << "video client disconnected while sending frame\n";
         break;
@@ -227,8 +274,8 @@ void HostServer::run_video_channel() {
       if (now - last_stats >= std::chrono::seconds(1)) {
         std::cout << "FIFSCREEN_HOST event=video_stats frames_sent=" << frames_sent
                   << " video_bytes_sent=" << bytes_sent
-                  << " output=" << kOutputWidth << "x" << kOutputHeight
-                  << " fps_target=" << kFps << "\n";
+                  << " output=" << mode.width << "x" << mode.height
+                  << " fps_target=" << mode.fps << "\n";
         last_stats = now;
       }
 

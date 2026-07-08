@@ -108,11 +108,11 @@ class StreamClient(
                         "width" to configuredWidth,
                         "height" to configuredHeight
                     )
-                    if (configuredCodec == "raw-rgba") {
+                    if (configuredCodec == "raw-rgba" || configuredCodec == "raw-rgb565") {
                         decoder?.stop()
                         decoder = null
-                        rawRenderer = RawSurfaceRenderer(surface, configuredWidth, configuredHeight)
-                        listener.onStatus("Streaming raw")
+                        rawRenderer = RawSurfaceRenderer(surface, configuredWidth, configuredHeight, configuredCodec)
+                        listener.onStatus("Streaming $configuredCodec")
                     } else {
                         rawRenderer = null
                         if (decoder == null) {
@@ -149,7 +149,7 @@ class StreamClient(
                 when {
                     rawStats != null -> {
                         listener.onStats(
-                            "${configuredWidth}x$configuredHeight  FPS $fps  raw-rgba  " +
+                            "${configuredWidth}x$configuredHeight  FPS $fps  $configuredCodec  " +
                                 "bytes $videoBytesReceived  rendered ${rawStats.renderedFrames}  " +
                                 "dropped ${rawStats.droppedFrames}"
                         )

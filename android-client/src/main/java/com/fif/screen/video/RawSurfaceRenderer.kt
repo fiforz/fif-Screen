@@ -10,7 +10,8 @@ import java.nio.ByteBuffer
 class RawSurfaceRenderer(
     private val surface: Surface,
     private val width: Int,
-    private val height: Int
+    private val height: Int,
+    private val pixelFormat: String
 ) {
     data class Stats(
         val submittedFrames: Long,
@@ -18,14 +19,19 @@ class RawSurfaceRenderer(
         val droppedFrames: Long
     )
 
-    private val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    private val bytesPerPixel = if (pixelFormat == "raw-rgb565") 2 else 4
+    private val bitmap = Bitmap.createBitmap(
+        width,
+        height,
+        if (pixelFormat == "raw-rgb565") Bitmap.Config.RGB_565 else Bitmap.Config.ARGB_8888
+    )
     private var submittedFrames = 0L
     private var renderedFrames = 0L
     private var droppedFrames = 0L
 
     fun render(payload: ByteArray) {
         submittedFrames += 1
-        if (payload.size != width * height * 4 || !surface.isValid) {
+        if (payload.size != width * height * bytesPerPixel || !surface.isValid) {
             droppedFrames += 1
             return
         }
@@ -34,7 +40,8 @@ class RawSurfaceRenderer(
         var canvas: Canvas? = null
         try {
             canvas = surface.lockCanvas(null)
-            val destination = Rect(0, 0, canvas.width, canvas.height)
+            val destination = fitRect(canvas.width, canvas.height)
+            canvas.drawRGB(0, 0, 0)
             canvas.drawBitmap(bitmap, null, destination, null)
             renderedFrames += 1
         } catch (e: Exception) {
@@ -48,4 +55,18 @@ class RawSurfaceRenderer(
     }
 
     fun stats(): Stats = Stats(submittedFrames, renderedFrames, droppedFrames)
+
+    private fun fitRect(canvasWidth: Int, canvasHeight: Int): Rect {
+        val sourceAspect = width.toFloat() / height.toFloat()
+        val canvasAspect = canvasWidth.toFloat() / canvasHeight.toFloat()
+        return if (canvasAspect > sourceAspect) {
+            val drawWidth = (canvasHeight * sourceAspect).toInt()
+            val left = (canvasWidth - drawWidth) / 2
+            Rect(left, 0, left + drawWidth, canvasHeight)
+        } else {
+            val drawHeight = (canvasWidth / sourceAspect).toInt()
+            val top = (canvasHeight - drawHeight) / 2
+            Rect(0, top, canvasWidth, top + drawHeight)
+        }
+    }
 }
