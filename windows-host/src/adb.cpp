@@ -10,18 +10,32 @@ namespace fif::host {
 namespace {
 
 std::string quote_for_cmd(const std::string& value) {
+  if (value.find_first_of(" \t") == std::string::npos) {
+    return value;
+  }
   return "\"" + value + "\"";
 }
 
-}  // namespace
-
-std::string AdbReverseManager::adb_command() const {
+std::string adb_base_command() {
   if (const char* from_env = std::getenv("FIF_ADB")) {
     if (from_env[0] != '\0') {
       return quote_for_cmd(from_env);
     }
   }
   return "adb";
+}
+
+}  // namespace
+
+std::string AdbReverseManager::adb_command() const {
+  std::string command = adb_base_command();
+  if (const char* serial = std::getenv("FIF_ADB_SERIAL")) {
+    if (serial[0] != '\0') {
+      command += " -s ";
+      command += quote_for_cmd(serial);
+    }
+  }
+  return command;
 }
 
 bool AdbReverseManager::is_adb_available() const {

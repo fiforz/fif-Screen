@@ -4,10 +4,12 @@ import android.view.Surface
 import com.fif.screen.diagnostics.FifLog
 import com.fif.screen.protocol.FifProtocol
 import com.fif.screen.video.H264SurfaceDecoder
+import com.fif.screen.video.RawSurfaceRenderer
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.nio.charset.StandardCharsets
 import kotlin.math.roundToInt
+import org.json.JSONObject
 
 class StreamClient(
     private val surface: Surface,
@@ -26,6 +28,7 @@ class StreamClient(
     private var controlSocket: Socket? = null
     private var videoSocket: Socket? = null
     private var decoder: H264SurfaceDecoder? = null
+    private var rawRenderer: RawSurfaceRenderer? = null
 
     fun run() {
         try {
@@ -47,8 +50,6 @@ class StreamClient(
             )
 
             listener.onStatus("Connecting video")
-            FifLog.decoder("event" to "decoder_start_requested", "mime" to "video/avc")
-            decoder = H264SurfaceDecoder(surface, 1280, 720).also { it.start() }
             FifLog.network("event" to "connect_start", "port" to videoPort)
             videoSocket = connect(videoPort)
             readVideoLoop(videoSocket ?: error("video socket missing"))
@@ -88,26 +89,94 @@ class StreamClient(
         listener.onStatus("Streaming")
         var lastStatsNs = System.nanoTime()
         var receivedFrames = 0L
+        var videoBytesReceived = 0L
+        var configuredCodec = "waiting"
+        var configuredWidth = 0
+        var configuredHeight = 0
         while (running) {
             val packet = FifProtocol.readPacket(socket.getInputStream(), FifProtocol.MAX_VIDEO_PAYLOAD)
-            if (packet.header.type == FifProtocol.TYPE_VIDEO_CONFIG ||
-                packet.header.type == FifProtocol.TYPE_VIDEO_FRAME
-            ) {
-                decoder?.submit(packet.payload, packet.header.flags, packet.header.timestampNs)
-                receivedFrames += 1
+            videoBytesReceived += packet.payload.size.toLong()
+            when (packet.header.type) {
+                FifProtocol.TYPE_VIDEO_CONFIG -> {
+                    val config = JSONObject(String(packet.payload, StandardCharsets.UTF_8))
+                    configuredCodec = config.optString("codec", "video/avc")
+                    configuredWidth = config.optInt("width", 1280)
+                    configuredHeight = config.optInt("height", 720)
+                    FifLog.decoder(
+                        "event" to "video_config",
+                        "codec" to configuredCodec,
+                        "width" to configuredWidth,
+                        "height" to configuredHeight
+                    )
+                    if (configuredCodec == "raw-rgba") {
+                        decoder?.stop()
+                        decoder = null
+                        rawRenderer = RawSurfaceRenderer(surface, configuredWidth, configuredHeight)
+                        listener.onStatus("Streaming raw")
+                    } else {
+                        rawRenderer = null
+                        if (decoder == null) {
+                            FifLog.decoder("event" to "decoder_start_requested", "mime" to "video/avc")
+                            decoder = H264SurfaceDecoder(surface, configuredWidth, configuredHeight).also { it.start() }
+                        }
+                        listener.onStatus("Streaming H.264")
+                    }
+                }
+                FifProtocol.TYPE_VIDEO_FRAME -> {
+                    val raw = rawRenderer
+                    if (raw != null) {
+                        raw.render(packet.payload)
+                    } else {
+                        if (decoder == null) {
+                            configuredCodec = "video/avc"
+                            configuredWidth = if (configuredWidth == 0) 1280 else configuredWidth
+                            configuredHeight = if (configuredHeight == 0) 720 else configuredHeight
+                            decoder = H264SurfaceDecoder(surface, configuredWidth, configuredHeight).also { it.start() }
+                        }
+                        decoder?.submit(packet.payload, packet.header.flags, packet.header.timestampNs)
+                    }
+                    receivedFrames += 1
+                }
             }
 
             val now = System.nanoTime()
             if (now - lastStatsNs >= 1_000_000_000L) {
-                val stats = decoder?.stats()
                 val fps = receivedFrames
                 receivedFrames = 0
                 lastStatsNs = now
-                if (stats != null) {
-                    listener.onStats(
-                        "1280x720  FPS $fps  decoder ${stats.decoderName}  " +
-                            "decode ${stats.lastDecodeLatencyMs.roundToInt()} ms  " +
-                            "dropped ${stats.droppedFrames}"
+                val rawStats = rawRenderer?.stats()
+                val h264Stats = decoder?.stats()
+                when {
+                    rawStats != null -> {
+                        listener.onStats(
+                            "${configuredWidth}x$configuredHeight  FPS $fps  raw-rgba  " +
+                                "bytes $videoBytesReceived  rendered ${rawStats.renderedFrames}  " +
+                                "dropped ${rawStats.droppedFrames}"
+                        )
+                        FifLog.decoder(
+                            "event" to "raw_stats",
+                            "VIDEO_BYTES_RECEIVED" to videoBytesReceived,
+                            "VIDEO_FRAMES_RECEIVED" to rawStats.submittedFrames,
+                            "RENDERED_FRAMES" to rawStats.renderedFrames
+                        )
+                    }
+                    h264Stats != null -> {
+                        listener.onStats(
+                            "${configuredWidth}x$configuredHeight  FPS $fps  decoder ${h264Stats.decoderName}  " +
+                                "decode ${h264Stats.lastDecodeLatencyMs.roundToInt()} ms  " +
+                                "dropped ${h264Stats.droppedFrames}"
+                        )
+                        FifLog.decoder(
+                            "event" to "h264_stats",
+                            "VIDEO_BYTES_RECEIVED" to videoBytesReceived,
+                            "VIDEO_FRAMES_RECEIVED" to h264Stats.submittedFrames,
+                            "DECODER_INPUT_FRAMES" to h264Stats.submittedFrames,
+                            "DECODER_OUTPUT_FRAMES" to h264Stats.renderedFrames,
+                            "RENDERED_FRAMES" to h264Stats.renderedFrames
+                        )
+                    }
+                    else -> listener.onStats(
+                        "waiting  FPS $fps  codec $configuredCodec  bytes $videoBytesReceived"
                     )
                 }
             }
@@ -125,6 +194,7 @@ class StreamClient(
         } catch (_: Exception) {
         }
         decoder?.stop()
+        rawRenderer = null
         controlSocket = null
         videoSocket = null
         decoder = null

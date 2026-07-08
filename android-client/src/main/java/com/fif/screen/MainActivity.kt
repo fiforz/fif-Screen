@@ -29,6 +29,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private var executor: ExecutorService? = null
     private var client: StreamClient? = null
     private var surfaceReady = false
+    private var autoStartRequested = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -111,6 +112,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     override fun surfaceCreated(holder: SurfaceHolder) {
         surfaceReady = true
         FifLog.surface("event" to "created", "valid" to holder.surface.isValid)
+        maybeAutoStart()
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
@@ -122,6 +124,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             "height" to height,
             "valid" to holder.surface.isValid
         )
+        maybeAutoStart()
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
@@ -141,6 +144,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             startClient()
         } else {
             stopClient()
+        }
+    }
+
+    private fun maybeAutoStart() {
+        if (!autoStartRequested && surfaceReady && client == null) {
+            autoStartRequested = true
+            surfaceView.post { startClient() }
         }
     }
 
