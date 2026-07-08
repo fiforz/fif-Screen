@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -25,6 +26,15 @@ struct VideoMode {
   int height = 1080;
   int fps = 30;
 };
+
+struct DirtyPayload {
+  std::vector<std::uint8_t> bytes;
+  std::uint32_t rect_count = 0;
+  bool full_frame = false;
+};
+
+constexpr int kDirtyTileSize = 64;
+constexpr std::uint16_t kDirtyFlagFullFrame = 1u << 0;
 
 int env_int(const char* name, int fallback, int min_value, int max_value) {
   const char* raw = std::getenv(name);
@@ -57,6 +67,10 @@ bool env_flag_enabled(const char* name) {
 }
 
 std::vector<std::uint8_t> rgba_to_rgb565(const RawFrame& frame) {
+  if (!frame.rgb565.empty()) {
+    return frame.rgb565;
+  }
+
   std::vector<std::uint8_t> out;
   out.resize(static_cast<std::size_t>(frame.width) * frame.height * 2);
   std::size_t dst = 0;
@@ -69,6 +83,93 @@ std::vector<std::uint8_t> rgba_to_rgb565(const RawFrame& frame) {
     out[dst++] = static_cast<std::uint8_t>((pixel >> 8) & 0xff);
   }
   return out;
+}
+
+void append_u16_le(std::vector<std::uint8_t>& out, std::uint16_t value) {
+  out.push_back(static_cast<std::uint8_t>(value & 0xffu));
+  out.push_back(static_cast<std::uint8_t>((value >> 8u) & 0xffu));
+}
+
+void append_u32_le(std::vector<std::uint8_t>& out, std::uint32_t value) {
+  for (int i = 0; i < 4; ++i) {
+    out.push_back(static_cast<std::uint8_t>((value >> (8u * i)) & 0xffu));
+  }
+}
+
+bool rgb565_tile_changed(const std::vector<std::uint8_t>& current,
+                         const std::vector<std::uint8_t>& previous,
+                         int frame_width,
+                         int x,
+                         int y,
+                         int width,
+                         int height) {
+  const std::size_t stride = static_cast<std::size_t>(frame_width) * 2;
+  const std::size_t row_bytes = static_cast<std::size_t>(width) * 2;
+  for (int row = 0; row < height; ++row) {
+    const std::size_t offset = (static_cast<std::size_t>(y + row) * frame_width + x) * 2;
+    if (std::memcmp(current.data() + offset, previous.data() + offset, row_bytes) != 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void append_rgb565_tile(std::vector<std::uint8_t>& out,
+                        const std::vector<std::uint8_t>& rgb565,
+                        int frame_width,
+                        int x,
+                        int y,
+                        int width,
+                        int height) {
+  const std::size_t row_bytes = static_cast<std::size_t>(width) * 2;
+  for (int row = 0; row < height; ++row) {
+    const std::size_t offset = (static_cast<std::size_t>(y + row) * frame_width + x) * 2;
+    out.insert(out.end(), rgb565.begin() + static_cast<std::ptrdiff_t>(offset),
+               rgb565.begin() + static_cast<std::ptrdiff_t>(offset + row_bytes));
+  }
+}
+
+DirtyPayload build_dirty_rgb565_payload(const RawFrame& frame,
+                                        std::vector<std::uint8_t>& previous_rgb565) {
+  auto current_rgb565 = rgba_to_rgb565(frame);
+  const bool full_frame = previous_rgb565.size() != current_rgb565.size();
+
+  DirtyPayload payload;
+  payload.full_frame = full_frame;
+  payload.bytes.reserve(full_frame ? current_rgb565.size() + 4096 : 256 * 1024);
+  payload.bytes.insert(payload.bytes.end(), {'F', 'D', 'R', '1'});
+  append_u16_le(payload.bytes, static_cast<std::uint16_t>(kDirtyTileSize));
+  append_u16_le(payload.bytes, full_frame ? kDirtyFlagFullFrame : 0);
+  const std::size_t rect_count_offset = payload.bytes.size();
+  append_u32_le(payload.bytes, 0);
+
+  for (int y = 0; y < frame.height; y += kDirtyTileSize) {
+    const int tile_height = std::min(kDirtyTileSize, frame.height - y);
+    for (int x = 0; x < frame.width; x += kDirtyTileSize) {
+      const int tile_width = std::min(kDirtyTileSize, frame.width - x);
+      const bool changed = full_frame ||
+          rgb565_tile_changed(current_rgb565, previous_rgb565, frame.width,
+                              x, y, tile_width, tile_height);
+      if (!changed) {
+        continue;
+      }
+
+      append_u16_le(payload.bytes, static_cast<std::uint16_t>(x));
+      append_u16_le(payload.bytes, static_cast<std::uint16_t>(y));
+      append_u16_le(payload.bytes, static_cast<std::uint16_t>(tile_width));
+      append_u16_le(payload.bytes, static_cast<std::uint16_t>(tile_height));
+      append_rgb565_tile(payload.bytes, current_rgb565, frame.width, x, y, tile_width, tile_height);
+      ++payload.rect_count;
+    }
+  }
+
+  payload.bytes[rect_count_offset + 0] = static_cast<std::uint8_t>(payload.rect_count & 0xffu);
+  payload.bytes[rect_count_offset + 1] = static_cast<std::uint8_t>((payload.rect_count >> 8u) & 0xffu);
+  payload.bytes[rect_count_offset + 2] = static_cast<std::uint8_t>((payload.rect_count >> 16u) & 0xffu);
+  payload.bytes[rect_count_offset + 3] = static_cast<std::uint8_t>((payload.rect_count >> 24u) & 0xffu);
+
+  previous_rgb565 = std::move(current_rgb565);
+  return payload;
 }
 
 std::vector<std::uint8_t> make_json_payload(const std::string& json) {
@@ -92,7 +193,7 @@ std::string make_hello_ack_json(std::uint16_t control_port, std::uint16_t video_
        << ",\"selectedMode\":{\"width\":" << mode.width
        << ",\"height\":" << mode.height
        << ",\"refreshHz\":" << mode.fps << "}"
-       << ",\"codec\":{\"mime\":\"application/fif-raw-rgb565\",\"lowLatency\":true}}";
+       << ",\"codec\":{\"mime\":\"application/fif-raw-rgb565-dirty\",\"lowLatency\":true}}";
   return json.str();
 }
 
@@ -212,7 +313,7 @@ void HostServer::run_video_channel() {
   for (;;) {
     std::cout << "waiting for Android video client\n";
     Socket client = server.accept_one();
-    std::cout << "video client connected; streaming raw FifScreen capture\n";
+    std::cout << "video client connected; streaming dirty raw FifScreen capture\n";
 
     if (!target) {
       target = find_fifscreen_display();
@@ -232,10 +333,11 @@ void HostServer::run_video_channel() {
 
     std::uint64_t sequence = 1;
     std::ostringstream config;
-    config << "{\"codec\":\"raw-rgb565\",\"width\":" << mode.width
+    config << "{\"codec\":\"raw-rgb565-dirty\",\"width\":" << mode.width
            << ",\"height\":" << mode.height
            << ",\"fps\":" << mode.fps
            << ",\"bytesPerPixel\":2"
+           << ",\"tileSize\":" << kDirtyTileSize
            << ",\"sourceDisplay\":\"" << narrow(target->device_string)
            << "\",\"sourceWidth\":" << target->width
            << ",\"sourceHeight\":" << target->height << "}";
@@ -253,6 +355,11 @@ void HostServer::run_video_channel() {
     bool saved_capture_proof = !save_capture_proof;
     std::uint64_t frames_sent = 0;
     std::uint64_t bytes_sent = 0;
+    std::uint64_t dirty_rects_sent = 0;
+    std::uint64_t full_frames_sent = 0;
+    std::uint64_t last_frames_sent = 0;
+    std::uint64_t last_bytes_sent = 0;
+    std::vector<std::uint8_t> previous_rgb565;
     auto last_stats = std::chrono::steady_clock::now();
     const auto frame_interval = std::chrono::microseconds(1'000'000 / mode.fps);
 
@@ -275,8 +382,13 @@ void HostServer::run_video_channel() {
       fif::PacketHeader frame_header;
       frame_header.type = fif::MessageType::VideoFrame;
       frame_header.sequence = sequence++;
-      const auto payload = rgba_to_rgb565(frame);
-      const auto packet = fif::encode_packet(frame_header, payload);
+      auto dirty = build_dirty_rgb565_payload(frame, previous_rgb565);
+      if (dirty.full_frame) {
+        frame_header.flags |= fif::kFlagIdrFrame;
+        ++full_frames_sent;
+      }
+      dirty_rects_sent += dirty.rect_count;
+      const auto packet = fif::encode_packet(frame_header, dirty.bytes);
       if (!client.send_all(packet)) {
         std::cout << "video client disconnected while sending frame\n";
         break;
@@ -286,16 +398,28 @@ void HostServer::run_video_channel() {
 
       const auto now = std::chrono::steady_clock::now();
       if (now - last_stats >= std::chrono::seconds(1)) {
+        const auto interval_frames = frames_sent - last_frames_sent;
+        const auto interval_bytes = bytes_sent - last_bytes_sent;
         std::cout << "FIFSCREEN_HOST event=video_stats frames_sent=" << frames_sent
                   << " video_bytes_sent=" << bytes_sent
+                  << " interval_fps=" << interval_frames
+                  << " interval_bytes=" << interval_bytes
+                  << " dirty_rects_sent=" << dirty_rects_sent
+                  << " full_frames_sent=" << full_frames_sent
                   << " output=" << mode.width << "x" << mode.height
                   << " fps_target=" << mode.fps << "\n";
+        last_frames_sent = frames_sent;
+        last_bytes_sent = bytes_sent;
+        dirty_rects_sent = 0;
+        full_frames_sent = 0;
         last_stats = now;
       }
 
       const auto elapsed = std::chrono::steady_clock::now() - frame_start;
       if (elapsed < frame_interval) {
         std::this_thread::sleep_for(frame_interval - elapsed);
+      } else {
+        std::this_thread::yield();
       }
     }
   }

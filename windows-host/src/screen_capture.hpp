@@ -33,6 +33,7 @@ struct RawFrame {
   int width = 0;
   int height = 0;
   std::vector<std::uint8_t> rgba;
+  std::vector<std::uint8_t> rgb565;
 };
 
 std::optional<ScreenTarget> find_fifscreen_display();

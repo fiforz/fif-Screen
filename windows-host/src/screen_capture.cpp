@@ -378,10 +378,16 @@ bool GdiScreenCapturer::capture(RawFrame& frame) const {
   }
 
   HGDIOBJ old_bitmap = SelectObject(memory_dc, bitmap);
-  SetStretchBltMode(memory_dc, HALFTONE);
-  const BOOL copied = StretchBlt(memory_dc, 0, 0, output_width_, output_height_,
-                                 screen_dc, target_.x, target_.y, target_.width, target_.height,
-                                 SRCCOPY | CAPTUREBLT);
+  BOOL copied = FALSE;
+  if (output_width_ == target_.width && output_height_ == target_.height) {
+    copied = BitBlt(memory_dc, 0, 0, output_width_, output_height_,
+                    screen_dc, target_.x, target_.y, SRCCOPY | CAPTUREBLT);
+  } else {
+    SetStretchBltMode(memory_dc, COLORONCOLOR);
+    copied = StretchBlt(memory_dc, 0, 0, output_width_, output_height_,
+                        screen_dc, target_.x, target_.y, target_.width, target_.height,
+                        SRCCOPY | CAPTUREBLT);
+  }
 
   bool ok = false;
   if (copied) {
@@ -389,13 +395,17 @@ bool GdiScreenCapturer::capture(RawFrame& frame) const {
 
     frame.width = output_width_;
     frame.height = output_height_;
-    frame.rgba.resize(static_cast<std::size_t>(output_width_) * output_height_ * 4);
+    frame.rgba.clear();
+    frame.rgb565.resize(static_cast<std::size_t>(output_width_) * output_height_ * 2);
     const auto* bgra = static_cast<const std::uint8_t*>(bits);
-    for (std::size_t i = 0; i + 3 < frame.rgba.size(); i += 4) {
-      frame.rgba[i + 0] = bgra[i + 2];
-      frame.rgba[i + 1] = bgra[i + 1];
-      frame.rgba[i + 2] = bgra[i + 0];
-      frame.rgba[i + 3] = 0xff;
+    std::size_t dst = 0;
+    for (std::size_t src = 0; src + 3 < static_cast<std::size_t>(output_width_) * output_height_ * 4; src += 4) {
+      const std::uint16_t r = bgra[src + 2] >> 3;
+      const std::uint16_t g = bgra[src + 1] >> 2;
+      const std::uint16_t b = bgra[src + 0] >> 3;
+      const std::uint16_t pixel = static_cast<std::uint16_t>((r << 11) | (g << 5) | b);
+      frame.rgb565[dst++] = static_cast<std::uint8_t>(pixel & 0xffu);
+      frame.rgb565[dst++] = static_cast<std::uint8_t>((pixel >> 8u) & 0xffu);
     }
     ok = true;
   }

@@ -3,6 +3,7 @@ package com.fif.screen.net
 import android.view.Surface
 import com.fif.screen.diagnostics.FifLog
 import com.fif.screen.protocol.FifProtocol
+import com.fif.screen.video.DirtyRawSurfaceRenderer
 import com.fif.screen.video.H264SurfaceDecoder
 import com.fif.screen.video.RawSurfaceRenderer
 import java.net.InetSocketAddress
@@ -28,6 +29,7 @@ class StreamClient(
     private var controlSocket: Socket? = null
     private var videoSocket: Socket? = null
     private var decoder: H264SurfaceDecoder? = null
+    private var dirtyRawRenderer: DirtyRawSurfaceRenderer? = null
     private var rawRenderer: RawSurfaceRenderer? = null
 
     fun run() {
@@ -108,12 +110,20 @@ class StreamClient(
                         "width" to configuredWidth,
                         "height" to configuredHeight
                     )
-                    if (configuredCodec == "raw-rgba" || configuredCodec == "raw-rgb565") {
+                    if (configuredCodec == "raw-rgb565-dirty") {
                         decoder?.stop()
                         decoder = null
+                        rawRenderer = null
+                        dirtyRawRenderer = DirtyRawSurfaceRenderer(surface, configuredWidth, configuredHeight)
+                        listener.onStatus("Streaming dirty raw")
+                    } else if (configuredCodec == "raw-rgba" || configuredCodec == "raw-rgb565") {
+                        decoder?.stop()
+                        decoder = null
+                        dirtyRawRenderer = null
                         rawRenderer = RawSurfaceRenderer(surface, configuredWidth, configuredHeight, configuredCodec)
                         listener.onStatus("Streaming $configuredCodec")
                     } else {
+                        dirtyRawRenderer = null
                         rawRenderer = null
                         if (decoder == null) {
                             FifLog.decoder("event" to "decoder_start_requested", "mime" to "video/avc")
@@ -123,8 +133,11 @@ class StreamClient(
                     }
                 }
                 FifProtocol.TYPE_VIDEO_FRAME -> {
+                    val dirtyRaw = dirtyRawRenderer
                     val raw = rawRenderer
-                    if (raw != null) {
+                    if (dirtyRaw != null) {
+                        dirtyRaw.render(packet.payload)
+                    } else if (raw != null) {
                         raw.render(packet.payload)
                     } else {
                         if (decoder == null) {
@@ -145,8 +158,24 @@ class StreamClient(
                 receivedFrames = 0
                 lastStatsNs = now
                 val rawStats = rawRenderer?.stats()
+                val dirtyRawStats = dirtyRawRenderer?.stats()
                 val h264Stats = decoder?.stats()
                 when {
+                    dirtyRawStats != null -> {
+                        listener.onStats(
+                            "${configuredWidth}x$configuredHeight  FPS $fps  $configuredCodec  " +
+                                "bytes $videoBytesReceived  rendered ${dirtyRawStats.renderedFrames}  " +
+                                "rects ${dirtyRawStats.dirtyRects}  full ${dirtyRawStats.fullFrames}  " +
+                                "dropped ${dirtyRawStats.droppedFrames}"
+                        )
+                        FifLog.decoder(
+                            "event" to "dirty_raw_stats",
+                            "VIDEO_BYTES_RECEIVED" to videoBytesReceived,
+                            "VIDEO_FRAMES_RECEIVED" to dirtyRawStats.submittedFrames,
+                            "RENDERED_FRAMES" to dirtyRawStats.renderedFrames,
+                            "DIRTY_RECTS" to dirtyRawStats.dirtyRects
+                        )
+                    }
                     rawStats != null -> {
                         listener.onStats(
                             "${configuredWidth}x$configuredHeight  FPS $fps  $configuredCodec  " +
@@ -194,6 +223,7 @@ class StreamClient(
         } catch (_: Exception) {
         }
         decoder?.stop()
+        dirtyRawRenderer = null
         rawRenderer = null
         controlSocket = null
         videoSocket = null
