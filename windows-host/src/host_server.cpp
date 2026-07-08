@@ -21,8 +21,8 @@ namespace fif::host {
 namespace {
 
 struct VideoMode {
-  int width = 960;
-  int height = 540;
+  int width = 1920;
+  int height = 1080;
   int fps = 30;
 };
 
