@@ -1,9 +1,11 @@
 #include "screen_capture.hpp"
 
+#include <objidl.h>
 #include <gdiplus.h>
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <sstream>
@@ -131,6 +133,77 @@ LRESULT CALLBACK overlay_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpa
       return 0;
     default:
       return DefWindowProcW(hwnd, message, wparam, lparam);
+  }
+}
+
+std::optional<POINT> cursor_position_in_frame(const ScreenTarget& target,
+                                              int output_width, int output_height) {
+  CURSORINFO cursor_info{};
+  cursor_info.cbSize = sizeof(cursor_info);
+  if (!GetCursorInfo(&cursor_info) || cursor_info.flags != CURSOR_SHOWING ||
+      cursor_info.hCursor == nullptr) {
+    return std::nullopt;
+  }
+
+  const POINT screen_pos = cursor_info.ptScreenPos;
+  if (screen_pos.x < target.x || screen_pos.x >= target.x + target.width ||
+      screen_pos.y < target.y || screen_pos.y >= target.y + target.height) {
+    return std::nullopt;
+  }
+
+  const double scale_x = static_cast<double>(output_width) / target.width;
+  const double scale_y = static_cast<double>(output_height) / target.height;
+  POINT out{};
+  out.x = static_cast<LONG>(std::lround((screen_pos.x - target.x) * scale_x));
+  out.y = static_cast<LONG>(std::lround((screen_pos.y - target.y) * scale_y));
+  return out;
+}
+
+void set_rgba_pixel(RawFrame& frame, int x, int y,
+                    std::uint8_t r, std::uint8_t g, std::uint8_t b) {
+  if (x < 0 || y < 0 || x >= frame.width || y >= frame.height) {
+    return;
+  }
+  const std::size_t offset = (static_cast<std::size_t>(y) * frame.width + x) * 4;
+  frame.rgba[offset + 0] = r;
+  frame.rgba[offset + 1] = g;
+  frame.rgba[offset + 2] = b;
+  frame.rgba[offset + 3] = 0xff;
+}
+
+void draw_software_cursor(RawFrame& frame, POINT tip) {
+  static constexpr const char* kCursor[] = {
+      "X...............",
+      "XX..............",
+      "XWX.............",
+      "XWWX............",
+      "XWWWX...........",
+      "XWWWWX..........",
+      "XWWWWWX.........",
+      "XWWWWWWX........",
+      "XWWWWWWWX.......",
+      "XWWWWWWWWX......",
+      "XWWWWWWWWWX.....",
+      "XWWWWWWWWWWX....",
+      "XWWWWWWX........",
+      "XWWWXXWWX.......",
+      "XWWX..XWWX......",
+      "XWX....XWWX.....",
+      "XX.....XWWX.....",
+      "X.......XWWX....",
+      "........XWWX....",
+      ".........XX.....",
+  };
+
+  for (int y = 0; y < static_cast<int>(sizeof(kCursor) / sizeof(kCursor[0])); ++y) {
+    for (int x = 0; kCursor[y][x] != '\0'; ++x) {
+      const char pixel = kCursor[y][x];
+      if (pixel == 'X') {
+        set_rgba_pixel(frame, tip.x + x, tip.y + y, 0, 0, 0);
+      } else if (pixel == 'W') {
+        set_rgba_pixel(frame, tip.x + x, tip.y + y, 255, 255, 255);
+      }
+    }
   }
 }
 
@@ -330,6 +403,9 @@ bool GdiScreenCapturer::capture(RawFrame& frame) const {
       frame.rgba[i + 1] = bgra[i + 1];
       frame.rgba[i + 2] = bgra[i + 0];
       frame.rgba[i + 3] = 0xff;
+    }
+    if (auto cursor = cursor_position_in_frame(target_, output_width_, output_height_)) {
+      draw_software_cursor(frame, *cursor);
     }
     ok = true;
   }

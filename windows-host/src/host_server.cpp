@@ -47,6 +47,15 @@ VideoMode selected_video_mode() {
   return mode;
 }
 
+bool env_flag_enabled(const char* name) {
+  const char* raw = std::getenv(name);
+  if (!raw) {
+    return false;
+  }
+  const std::string value(raw);
+  return value == "1" || value == "true" || value == "TRUE" || value == "yes" || value == "YES";
+}
+
 std::vector<std::uint8_t> rgba_to_rgb565(const RawFrame& frame) {
   std::vector<std::uint8_t> out;
   out.resize(static_cast<std::size_t>(frame.width) * frame.height * 2);
@@ -195,7 +204,9 @@ void HostServer::run_video_channel() {
               << " string=" << narrow(target->device_string)
               << " pos=" << target->x << "," << target->y
               << " size=" << target->width << "x" << target->height << "\n";
-    overlay.start(*target);
+    if (env_flag_enabled("FIF_SHOW_TEST_OVERLAY")) {
+      overlay.start(*target);
+    }
   }
 
   for (;;) {
@@ -206,7 +217,9 @@ void HostServer::run_video_channel() {
     if (!target) {
       target = find_fifscreen_display();
       if (target) {
-        overlay.start(*target);
+        if (env_flag_enabled("FIF_SHOW_TEST_OVERLAY")) {
+          overlay.start(*target);
+        }
       } else {
         std::cerr << "no capture display available for this video client\n";
         client.close();
@@ -236,7 +249,8 @@ void HostServer::run_video_channel() {
     }
 
     RawFrame frame;
-    bool saved_capture_proof = false;
+    const bool save_capture_proof = env_flag_enabled("FIF_SAVE_CAPTURE_PROOF");
+    bool saved_capture_proof = !save_capture_proof;
     std::uint64_t frames_sent = 0;
     std::uint64_t bytes_sent = 0;
     auto last_stats = std::chrono::steady_clock::now();
@@ -250,7 +264,7 @@ void HostServer::run_video_channel() {
         continue;
       }
 
-      if (!saved_capture_proof) {
+      if (save_capture_proof && !saved_capture_proof) {
         saved_capture_proof =
             save_rgba_png(L"artifacts\\usb-video-mvp\\capture-test.png", frame);
         std::cout << "capture proof saved="
