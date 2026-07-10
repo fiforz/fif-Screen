@@ -2,6 +2,7 @@
 param(
     [string]$InstallDir = (Split-Path -Parent $PSScriptRoot),
     [string]$ReleaseApiUrl = '',
+    [string]$FallbackManifestUrl = '',
     [string]$CurrentVersion = '',
     [switch]$Background,
     [int]$ParentProcessId = 0,
@@ -12,6 +13,7 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 
 $DefaultReleaseApiUrl = 'https://api.github.com/repos/fiforz/fif-Screen/releases/latest'
+$DefaultFallbackManifestUrl = 'https://raw.githubusercontent.com/fiforz/fif-Screen/main/updates/latest-development.json'
 $UpdateLogDir = Join-Path $env:LOCALAPPDATA 'FifScreen\logs'
 $UpdateLogPath = Join-Path $UpdateLogDir 'update.log'
 New-Item -ItemType Directory -Force -Path $UpdateLogDir | Out-Null
@@ -166,6 +168,102 @@ function Get-LatestRelease {
     return Resolve-GitHubRelease -Release $release -RequireAuthenticode $RequireAuthenticode
 }
 
+function Resolve-UpdateManifest {
+    param(
+        [Parameter(Mandatory = $true)]$Manifest,
+        [string]$ExpectedChannel,
+        [bool]$RequireAuthenticode = $false
+    )
+
+    if ([string]$Manifest.product -ne 'FifScreen') {
+        throw "静态更新清单产品无效：$($Manifest.product)"
+    }
+    if ([string]$Manifest.channel -ne $ExpectedChannel) {
+        throw "静态更新清单通道无效：$($Manifest.channel)"
+    }
+    if ([string]$Manifest.architecture -ne 'x64') {
+        throw "静态更新清单架构无效：$($Manifest.architecture)"
+    }
+
+    try {
+        $version = [version][string]$Manifest.version
+    } catch {
+        throw "静态更新清单版本号无效：$($Manifest.version)"
+    }
+    $installerName = [string]$Manifest.installerName
+    $escapedVersion = [Regex]::Escape($version.ToString(3))
+    if ($installerName -notmatch "^FifScreen-Setup-$escapedVersion-(?:dev-)?x64\.exe$") {
+        throw "静态更新清单安装包名称无效：$installerName"
+    }
+    if ($RequireAuthenticode -and $installerName -match '-dev-x64\.exe$') {
+        throw '正式更新通道不能使用开发版安装包。'
+    }
+    if ([string]$Manifest.sha256 -notmatch '^[0-9A-Fa-f]{64}$') {
+        throw '静态更新清单缺少有效的 SHA-256。'
+    }
+    Assert-HttpsUri -Value ([string]$Manifest.installerUrl) `
+        -AllowedHosts @('github.com') -Description '静态清单安装包下载地址' | Out-Null
+
+    $publishedAt = if ($Manifest.publishedAt) {
+        [DateTimeOffset]::Parse([string]$Manifest.publishedAt).ToLocalTime()
+    } else {
+        [DateTimeOffset]::Now
+    }
+    return [pscustomobject]@{
+        Version = $version
+        VersionText = $version.ToString(3)
+        Tag = "v$($version.ToString(3))"
+        PublishedAt = $publishedAt
+        Notes = if ([string]::IsNullOrWhiteSpace([string]$Manifest.releaseNotes)) {
+            '本版本未提供更新日志。'
+        } else {
+            ([string]$Manifest.releaseNotes).Trim()
+        }
+        InstallerName = $installerName
+        InstallerUrl = [string]$Manifest.installerUrl
+        ExpectedHash = ([string]$Manifest.sha256).ToUpperInvariant()
+        HashUrl = ''
+        ReleaseUrl = [string]$Manifest.releaseUrl
+    }
+}
+
+function Get-LatestUpdate {
+    param(
+        [string]$ApiUrl,
+        [string]$ManifestUrl,
+        [string]$VersionText,
+        [string]$Channel,
+        [bool]$RequireAuthenticode
+    )
+
+    try {
+        $release = Get-LatestRelease -ApiUrl $ApiUrl -VersionText $VersionText `
+            -RequireAuthenticode $RequireAuthenticode
+        Write-UpdateLog '已通过 GitHub Release API 获取最新版本'
+        return $release
+    } catch {
+        $apiError = $_.Exception.Message
+        Write-UpdateLog "GitHub Release API 失败，尝试静态清单：$apiError"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($ManifestUrl)) {
+        throw "GitHub Release API 请求失败：$apiError"
+    }
+    try {
+        Assert-HttpsUri -Value $ManifestUrl `
+            -AllowedHosts @('raw.githubusercontent.com', 'github.com') `
+            -Description '静态更新清单地址' | Out-Null
+        $headers = Get-GitHubHeaders -VersionText $VersionText
+        $manifest = Invoke-RestMethod -Uri $ManifestUrl -Headers $headers -TimeoutSec 20
+        $release = Resolve-UpdateManifest -Manifest $manifest -ExpectedChannel $Channel `
+            -RequireAuthenticode $RequireAuthenticode
+        Write-UpdateLog '已通过仓库静态清单获取最新版本'
+        return $release
+    } catch {
+        throw "GitHub Release API 与静态清单均失败。API：$apiError；清单：$($_.Exception.Message)"
+    }
+}
+
 function Get-ReleaseHash {
     param(
         [Parameter(Mandatory = $true)]$ReleaseInfo,
@@ -266,6 +364,23 @@ function Invoke-SelfTest {
         $resolved.ExpectedHash -ne '0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF') {
         throw '更新解析自检失败。'
     }
+    $fakeManifest = [pscustomobject]@{
+        product = 'FifScreen'
+        channel = 'development'
+        architecture = 'x64'
+        version = '9.8.7'
+        publishedAt = '2026-07-10T08:00:00Z'
+        releaseNotes = '静态清单测试'
+        installerName = 'FifScreen-Setup-9.8.7-dev-x64.exe'
+        installerUrl = 'https://github.com/fiforz/fif-Screen/releases/download/v9.8.7/FifScreen-Setup-9.8.7-dev-x64.exe'
+        sha256 = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+        releaseUrl = 'https://github.com/fiforz/fif-Screen/releases/tag/v9.8.7'
+    }
+    $manifestResult = Resolve-UpdateManifest -Manifest $fakeManifest -ExpectedChannel 'development'
+    if ($manifestResult.VersionText -ne '9.8.7' -or
+        $manifestResult.ExpectedHash -ne '0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF') {
+        throw '静态更新清单自检失败。'
+    }
     Write-Output 'UPDATE_SELF_TEST=PASS'
 }
 
@@ -299,6 +414,17 @@ try {
     if ([string]::IsNullOrWhiteSpace($ReleaseApiUrl)) {
         $ReleaseApiUrl = $DefaultReleaseApiUrl
     }
+    if ([string]::IsNullOrWhiteSpace($FallbackManifestUrl)) {
+        $FallbackManifestUrl = [string]$config.fallbackManifestUrl
+    }
+    if ([string]::IsNullOrWhiteSpace($FallbackManifestUrl)) {
+        $FallbackManifestUrl = $DefaultFallbackManifestUrl
+    }
+    $channel = if ([string]::IsNullOrWhiteSpace([string]$config.channel)) {
+        'development'
+    } else {
+        [string]$config.channel
+    }
     $requireAuthenticode = [bool]$config.requireAuthenticode
 } catch {
     Write-UpdateLog "更新配置无效：$($_.Exception.Message)"
@@ -310,26 +436,32 @@ try {
 }
 
 $retrySeconds = 30
+$manualAttempt = 0
 $releaseInfo = $null
 while ($null -eq $releaseInfo) {
     if (-not (Test-ParentProcess)) {
         exit 0
     }
     try {
-        $releaseInfo = Get-LatestRelease -ApiUrl $ReleaseApiUrl `
-            -VersionText $CurrentVersion -RequireAuthenticode $requireAuthenticode
+        $releaseInfo = Get-LatestUpdate -ApiUrl $ReleaseApiUrl `
+            -ManifestUrl $FallbackManifestUrl -VersionText $CurrentVersion `
+            -Channel $channel -RequireAuthenticode $requireAuthenticode
     } catch {
-        Write-UpdateLog "连接 GitHub 失败，将重试：$($_.Exception.Message)"
-        if (-not $Background) {
+        $manualAttempt += 1
+        Write-UpdateLog "连接 GitHub 失败，第 $manualAttempt 次检查未成功：$($_.Exception.Message)"
+        if (-not $Background -and $manualAttempt -ge 3) {
             Show-UpdateMessage `
                 -Text '连接GitHub仓库失败，请检查网络环境，并再次点击检查更新！' `
                 -Icon ([System.Windows.Forms.MessageBoxIcon]::Warning)
             exit 1
         }
-        if (-not (Wait-ForRetry -Seconds $retrySeconds)) {
+        $waitSeconds = if ($Background) { $retrySeconds } else { 2 * $manualAttempt }
+        if (-not (Wait-ForRetry -Seconds $waitSeconds)) {
             exit 0
         }
-        $retrySeconds = [Math]::Min($retrySeconds * 2, 900)
+        if ($Background) {
+            $retrySeconds = [Math]::Min($retrySeconds * 2, 900)
+        }
     }
 }
 

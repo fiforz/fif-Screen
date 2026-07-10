@@ -138,6 +138,25 @@ $hash = (Get-FileHash -LiteralPath $InstallerPath -Algorithm SHA256).Hash
 $hashPath = "$InstallerPath.sha256"
 "$hash  $([IO.Path]::GetFileName($InstallerPath))" | Set-Content -LiteralPath $hashPath -Encoding ASCII
 
+$currentRepoVersion = (Get-Content -LiteralPath (Join-Path $RepoRoot 'VERSION') -Raw).Trim()
+if ($Version -eq $currentRepoVersion) {
+    $channel = if ([IO.Path]::GetFileName($InstallerPath) -match '-dev-x64\.exe$') {
+        'development'
+    } else {
+        'stable'
+    }
+    $latestManifestPath = Join-Path $RepoRoot "updates\latest-$channel.json"
+    if (-not (Test-Path -LiteralPath $latestManifestPath)) {
+        throw "找不到当前版本的静态更新清单：$latestManifestPath"
+    }
+    $latestManifest = Get-Content -LiteralPath $latestManifestPath -Raw | ConvertFrom-Json
+    if ([string]$latestManifest.version -ne $Version -or
+        [string]$latestManifest.installerName -ne [IO.Path]::GetFileName($InstallerPath) -or
+        ([string]$latestManifest.sha256).ToUpperInvariant() -ne $hash) {
+        throw '静态更新清单与当前安装包版本、文件名或 SHA-256 不一致。'
+    }
+}
+
 & git -C $RepoRoot push origin main
 if ($LASTEXITCODE -ne 0) {
     throw '推送 main 分支失败。'

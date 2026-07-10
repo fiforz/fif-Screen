@@ -11,6 +11,8 @@ param(
 
     [string]$ReleaseApiUrl = 'https://api.github.com/repos/fiforz/fif-Screen/releases/latest',
 
+    [string]$FallbackManifestUrl = '',
+
     [string]$UpdateBaseUrl = '',
 
     [switch]$SkipBuild
@@ -23,6 +25,10 @@ $DriverPackageWasProvided = -not [string]::IsNullOrWhiteSpace($DriverPackageDir)
 $ApkWasProvided = -not [string]::IsNullOrWhiteSpace($ApkPath)
 $Version = (Get-Content -LiteralPath (Join-Path $RepoRoot 'VERSION') -Raw).Trim()
 $VersionCode = [int](Get-Content -LiteralPath (Join-Path $RepoRoot 'VERSION_CODE') -Raw).Trim()
+$UpdateChannel = if ($DriverFlavor -eq 'Production') { 'stable' } else { 'development' }
+if (-not $FallbackManifestUrl) {
+    $FallbackManifestUrl = "https://raw.githubusercontent.com/fiforz/fif-Screen/main/updates/latest-$UpdateChannel.json"
+}
 
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
     throw "VERSION must use semantic x.y.z format: $Version"
@@ -40,7 +46,7 @@ if ($DriverFlavor -eq 'Production') {
     }
 }
 
-foreach ($candidateUrl in @($UpdateManifestUrl, $ReleaseApiUrl, $UpdateBaseUrl)) {
+foreach ($candidateUrl in @($UpdateManifestUrl, $ReleaseApiUrl, $FallbackManifestUrl, $UpdateBaseUrl)) {
     if ($candidateUrl) {
         $uri = [Uri]$candidateUrl
         if (-not $uri.IsAbsoluteUri -or $uri.Scheme -ne 'https') {
@@ -417,11 +423,12 @@ $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runti
 $updateConfig = [ordered]@{
     schemaVersion = 1
     product = 'FifScreen'
-    channel = if ($DriverFlavor -eq 'Production') { 'stable' } else { 'development' }
+    channel = $UpdateChannel
     currentVersion = $Version
     architecture = 'x64'
     manifestUrl = $UpdateManifestUrl
     releaseApiUrl = $ReleaseApiUrl
+    fallbackManifestUrl = $FallbackManifestUrl
     repositoryUrl = 'https://github.com/fiforz/fif-Screen'
     requireAuthenticode = $DriverFlavor -eq 'Production'
 }
@@ -441,7 +448,7 @@ $env:FIFSCREEN_OUTPUT_DIR = $artifactRoot
 $env:FIFSCREEN_OUTPUT_BASENAME = $outputBaseName
 $env:FIFSCREEN_DRIVER_FLAVOR = $DriverFlavor
 $env:FIFSCREEN_EDITION_LABEL = $editionLabel
-$env:FIFSCREEN_UPDATE_CHANNEL = if ($DriverFlavor -eq 'Production') { 'stable' } else { 'development' }
+$env:FIFSCREEN_UPDATE_CHANNEL = $UpdateChannel
 $env:FIFSCREEN_RELEASE_API_URL = $ReleaseApiUrl
 
 Invoke-Checked -FilePath $Iscc -Arguments @((Join-Path $RepoRoot 'packaging\FifScreen.iss')) -Description 'Compile FifScreen Setup'
@@ -462,7 +469,7 @@ $remoteInstallerUrl = if ($UpdateBaseUrl) {
 $feed = [ordered]@{
     schemaVersion = 1
     product = 'FifScreen'
-    channel = if ($DriverFlavor -eq 'Production') { 'stable' } else { 'development' }
+    channel = $UpdateChannel
     version = $Version
     architecture = 'x64'
     installerUrl = $remoteInstallerUrl
@@ -471,6 +478,30 @@ $feed = [ordered]@{
 }
 $feedPath = Join-Path $artifactRoot ("FifScreen-update-{0}.json" -f $feed.channel)
 $feed | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $feedPath -Encoding UTF8
+
+$releaseNotesPath = Join-Path $RepoRoot "docs\releases\v$Version.md"
+$releaseNotes = if (Test-Path -LiteralPath $releaseNotesPath) {
+    [IO.File]::ReadAllText((Resolve-Path -LiteralPath $releaseNotesPath).Path, [Text.UTF8Encoding]::new($false))
+} else {
+    "FifScreen $Version"
+}
+$latestManifest = [ordered]@{
+    schemaVersion = 1
+    product = 'FifScreen'
+    channel = $UpdateChannel
+    version = $Version
+    architecture = 'x64'
+    publishedAt = (Get-Date).ToUniversalTime().ToString('o')
+    releaseNotes = $releaseNotes
+    installerName = [IO.Path]::GetFileName($setupPath)
+    installerUrl = "https://github.com/fiforz/fif-Screen/releases/download/v$Version/$([IO.Path]::GetFileName($setupPath))"
+    sha256 = $setupHash
+    releaseUrl = "https://github.com/fiforz/fif-Screen/releases/tag/v$Version"
+}
+$updatesDir = Join-Path $RepoRoot 'updates'
+New-Item -ItemType Directory -Force -Path $updatesDir | Out-Null
+$latestManifestPath = Join-Path $updatesDir "latest-$UpdateChannel.json"
+$latestManifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $latestManifestPath -Encoding UTF8
 
 $setupSignature = Get-AuthenticodeSignature -LiteralPath $setupPath
 $report = [ordered]@{
@@ -482,6 +513,7 @@ $report = [ordered]@{
     setupSha256 = $setupHash
     setupSignatureStatus = [string]$setupSignature.Status
     updateFeedPath = $feedPath
+    fallbackManifestPath = $latestManifestPath
     stagePath = $stageDir
 }
 $reportPath = Join-Path $artifactRoot "FifScreen-Setup-$Version-build-report.json"

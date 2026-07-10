@@ -1,0 +1,13 @@
+﻿{
+    "schemaVersion":  1,
+    "product":  "FifScreen",
+    "channel":  "development",
+    "version":  "0.3.1",
+    "architecture":  "x64",
+    "publishedAt":  "2026-07-10T13:05:42.0149825Z",
+    "releaseNotes":  "# FifScreen 0.3.1\n\n本版本修复检查更新的间歇性超时，并强制 Windows 控制中心使用管理员权限运行。\n\n## 更新内容\n\n- 控制中心启动时检查当前进程是否具有管理员权限；\n- 非管理员启动时弹出“请以管理员身份运行 FifScreen 控制中心”，点击确定后立即退出；\n- 手动检查更新失败后自动重试三次，不再因一次短暂超时立即报错；\n- GitHub Release API 超时时自动回退到仓库内的静态更新清单；\n- API 和静态清单均失败后，才显示网络环境提示；\n- 后台自动检查继续静默退避重试。\n\n## 安装说明\n\n这是开发预览版，包含测试签名显示驱动。Windows 必须已允许测试签名驱动，安装程序不会修改 BCD 或安全启动设置。\n",
+    "installerName":  "FifScreen-Setup-0.3.1-dev-x64.exe",
+    "installerUrl":  "https://github.com/fiforz/fif-Screen/releases/download/v0.3.1/FifScreen-Setup-0.3.1-dev-x64.exe",
+    "sha256":  "3F52EF61386E5F8704E64726A08C3C887CEE43EA8F782476847A54D56049CA48",
+    "releaseUrl":  "https://github.com/fiforz/fif-Screen/releases/tag/v0.3.1"
+}

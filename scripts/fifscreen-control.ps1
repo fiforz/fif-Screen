@@ -8,6 +8,22 @@ Add-Type -AssemblyName System.Drawing
 
 $ErrorActionPreference = 'Stop'
 
+function Test-IsAdministrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+if ($Action -eq 'Gui' -and -not (Test-IsAdministrator)) {
+    [void][System.Windows.Forms.MessageBox]::Show(
+        '请以管理员身份运行 FifScreen 控制中心。',
+        '需要管理员权限',
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Warning
+    )
+    [Environment]::Exit(1)
+}
+
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $RuntimeRoot = Join-Path $RepoRoot 'runtime'
 $InstalledLayout = Test-Path (Join-Path $RuntimeRoot 'bin\fif-host.exe')
