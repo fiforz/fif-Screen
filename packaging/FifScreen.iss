@@ -5,7 +5,7 @@
 #define DriverFlavor GetEnv("FIFSCREEN_DRIVER_FLAVOR")
 #define EditionLabel GetEnv("FIFSCREEN_EDITION_LABEL")
 #define UpdateChannel GetEnv("FIFSCREEN_UPDATE_CHANNEL")
-#define UpdateManifestUrl GetEnv("FIFSCREEN_UPDATE_MANIFEST_URL")
+#define ReleaseApiUrl GetEnv("FIFSCREEN_RELEASE_API_URL")
 
 [Setup]
 AppId={{E451D924-FA9E-4A43-9B4D-46A4B52DC040}
@@ -13,6 +13,9 @@ AppName=FifScreen
 AppVersion={#AppVersion}
 AppVerName=FifScreen {#AppVersion} {#EditionLabel}
 AppPublisher=FifScreen
+AppPublisherURL=https://github.com/fiforz/fif-Screen
+AppSupportURL=https://github.com/fiforz/fif-Screen/issues
+AppUpdatesURL=https://github.com/fiforz/fif-Screen/releases
 DefaultDirName={autopf}\FifScreen
 DefaultGroupName=FifScreen
 DisableProgramGroupPage=yes
@@ -49,20 +52,20 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\FifScreen\FifScreen Control"; Filename: "{app}\FifScreen Control.cmd"; WorkingDir: "{app}"
-Name: "{autoprograms}\FifScreen\Check for Updates"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\maintenance\check-update.ps1"" -InstallDir ""{app}"""; WorkingDir: "{app}"
-Name: "{autoprograms}\FifScreen\Uninstall FifScreen"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\FifScreen Control"; Filename: "{app}\FifScreen Control.cmd"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autoprograms}\FifScreen\FifScreen 控制中心"; Filename: "{app}\FifScreen Control.cmd"; WorkingDir: "{app}"
+Name: "{autoprograms}\FifScreen\检查更新"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\maintenance\check-update.ps1"" -InstallDir ""{app}"""; WorkingDir: "{app}"
+Name: "{autoprograms}\FifScreen\卸载 FifScreen"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\FifScreen 控制中心"; Filename: "{app}\FifScreen Control.cmd"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Registry]
 Root: HKLM; Subkey: "Software\FifScreen"; ValueType: string; ValueName: "InstallDir"; ValueData: "{app}"; Flags: uninsdeletevalue
 Root: HKLM; Subkey: "Software\FifScreen"; ValueType: string; ValueName: "Version"; ValueData: "{#AppVersion}"; Flags: uninsdeletevalue
 Root: HKLM; Subkey: "Software\FifScreen"; ValueType: string; ValueName: "UpdateChannel"; ValueData: "{#UpdateChannel}"; Flags: uninsdeletevalue
-Root: HKLM; Subkey: "Software\FifScreen"; ValueType: string; ValueName: "UpdateManifestUrl"; ValueData: "{#UpdateManifestUrl}"; Flags: uninsdeletevalue
+Root: HKLM; Subkey: "Software\FifScreen"; ValueType: string; ValueName: "ReleaseApiUrl"; ValueData: "{#ReleaseApiUrl}"; Flags: uninsdeletevalue
 Root: HKLM; Subkey: "Software\FifScreen"; Flags: uninsdeletekeyifempty
 
 [Run]
-Filename: "{app}\FifScreen Control.cmd"; Description: "Launch FifScreen Control"; WorkingDir: "{app}"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\FifScreen Control.cmd"; Description: "启动 FifScreen 控制中心"; WorkingDir: "{app}"; Flags: postinstall nowait skipifsilent
 
 [UninstallRun]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\maintenance\uninstall-cleanup.ps1"" -InstallDir ""{app}"""; Flags: runhidden waituntilterminated; RunOnceId: "FifScreenCleanupV1"
@@ -96,16 +99,16 @@ begin
   begin
     if WizardSilent then
     begin
-      MsgBox('This developer package requires /ALLOWTESTDRIVER=1 in silent mode.', mbError, MB_OK);
+      MsgBox('开发版静默安装必须添加 /ALLOWTESTDRIVER=1 参数。', mbError, MB_OK);
       Result := False;
       exit;
     end;
 
     Answer := MsgBox(
-      'This Developer Preview contains a test-signed display driver.' + #13#10 + #13#10 +
-      'It works only when Windows is already running in Test Signing mode and Secure Boot does not block it. ' +
-      'Setup will trust the bundled public test certificate, but it will NOT change BCD, Secure Boot, or reboot settings.' + #13#10 + #13#10 +
-      'Continue with the development driver?',
+      '此开发预览版包含测试签名的显示驱动。' + #13#10 + #13#10 +
+      'Windows 必须已经启用测试签名模式，且安全启动不能阻止该驱动。安装程序会信任随附的公开测试证书，' +
+      '但不会修改 BCD、安全启动或重启设置。' + #13#10 + #13#10 +
+      '是否继续安装开发版驱动？',
       mbConfirmation, MB_YESNO);
     if Answer <> IDYES then
     begin
@@ -129,7 +132,7 @@ begin
     Params := '-NoProfile -ExecutionPolicy Bypass -File "' + StopScript + '" -InstallDir "' + ExpandConstant('{app}') + '"';
     if (not Exec(PowerShellPath, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or
        (ResultCode <> 0) then
-      Result := 'Could not stop the existing FifScreen runtime before update.';
+      Result := '更新前无法关闭现有的 FifScreen 运行进程。';
   end;
 end;
 
@@ -148,7 +151,7 @@ begin
 
     if (not Exec(PowerShellPath, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or
        (ResultCode <> 0) then
-      RaiseException('FifScreen driver installation failed. See ' +
+      RaiseException('FifScreen 驱动安装失败，请查看日志：' +
         ExpandConstant('{commonappdata}\FifScreen\logs\driver-install.log'));
   end;
 end;

@@ -1,61 +1,48 @@
-# FifScreen Packaging
+# FifScreen Windows 打包说明
 
-`scripts/build-installer.ps1` creates a single versioned x64 Windows installer.
+`scripts/build-installer.ps1` 用于生成单文件、带版本号的 x64 Windows 安装包。
 
-The installer contains:
+安装包包含：
 
-- statically linked Windows Host and software-device launcher;
-- FifScreen indirect display driver package;
-- Android platform-tools ADB runtime;
-- versioned Android APK;
-- control panel and maintenance scripts;
-- update manifest configuration and complete uninstall cleanup.
+- 静态链接的 Windows 主机程序和软件设备启动器；
+- FifScreen 间接显示驱动；
+- Android Platform Tools ADB 运行环境；
+- 与产品版本一致的 Android APK；
+- 中文控制中心和维护脚本；
+- GitHub Releases 自动更新配置；
+- 完整卸载清理流程。
 
-The target PC does not need Visual Studio, the WDK, CMake, Gradle, a JDK, the
-Android SDK, or a Visual C++ redistributable. The Windows executables use the
-static MSVC runtime, and the required ADB files are part of the payload.
+目标电脑不需要安装 Visual Studio、WDK、CMake、Gradle、JDK、Android SDK 或 VC++ 运行库。
 
-## Development build
+## 构建开发版
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1
 ```
 
-The output is written to `artifacts\installer`. On the first **Start Display**,
-the control panel installs the bundled APK on an authorized USB-debugging
-device. Later Windows package upgrades also upgrade an older installed APK.
+输出位于 `artifacts\installer`。安装包内默认写入 FifScreen 官方 GitHub Releases API 地址。首次点击“启动扩展屏”时，控制中心会向已授权 USB 调试的 Android 设备安装随附 APK；后续 Windows 版本升级也会升级手机上的旧版 APK。
 
-The development build contains a test-signed driver. Setup requires an explicit
-warning confirmation (or `/ALLOWTESTDRIVER=1` for silent installs), imports only
-the matching public certificate, and never changes BCD or Secure Boot.
+开发版包含测试签名显示驱动。安装程序需要用户确认开发驱动警告；静默安装时必须添加 `/ALLOWTESTDRIVER=1`。安装程序只导入与驱动目录匹配的公开测试证书，不会修改 BCD、安全启动或重启设置。
 
-## Production build gate
+## 正式版构建门槛
 
-A production build must supply:
+正式版必须提供：
 
-1. a Microsoft-signed FifScreen driver package;
-2. a release-signed Android APK;
-3. an Authenticode code-signing certificate for Setup and Windows binaries;
-4. an HTTPS update manifest URL.
+1. Microsoft 签名的 FifScreen 驱动包；
+2. 使用发布密钥签名的 Android APK；
+3. 用于安装程序和 Windows 二进制的 Authenticode 代码签名证书；
+4. HTTPS GitHub Releases API 或兼容更新端点。
 
-The build script rejects `-DriverFlavor Production` when the driver catalog is
-not signed by Microsoft or the required release inputs are missing.
+当驱动目录、APK、更新端点或签名输入不符合正式版要求时，构建脚本会直接拒绝打包。
 
-The same fixed Inno Setup `AppId` is used for every version, so installing a
-newer package performs an in-place upgrade and preserves a single uninstall
-entry.
+每个版本都使用同一个 Inno Setup `AppId`，因此新版本会在原目录覆盖升级，并在系统中保留唯一卸载项。
 
-## Update and uninstall contracts
+## 更新与卸载约定
 
-The installed update shortcut reads `update.json`, requires an HTTPS manifest,
-checks product, channel, architecture, version, and SHA-256, and requires a
-valid Authenticode signature on production-channel installers.
+已安装的控制中心启动后读取 `update.json`，通过 GitHub 最新 Release 检查版本。更新器验证产品版本、x64 安装包名称、HTTPS 下载域、SHA-256，以及正式通道要求的 Authenticode 签名。
 
-Uninstall stops the installed runtime, removes the FifScreen software device
-and driver packages, removes only certificates originally added by Setup, and
-deletes FifScreen logs. It also removes the APK and ADB reverse ports from every
-connected authorized Android device. An APK on a disconnected phone cannot be
-removed by the Windows uninstaller and must be uninstalled on that phone.
+运行更新安装包之前，更新器会关闭 FifScreen 主机、设备启动器、控制中心和安装目录内的 ADB。安装程序还会再次执行同一关闭脚本，保证覆盖升级时文件没有被占用。
 
-The bundled Simplified Chinese Inno Setup translation is distributed under its
-MIT license in `packaging\licenses`.
+卸载程序会停止运行时、删除 FifScreen 软件设备和驱动包、删除只由安装程序导入的证书，并清理日志。它还会从所有当前已连接且已授权的 Android 设备中删除 APK 和 ADB 反向端口。电脑卸载时没有连接的手机无法被远程清理，需要在手机端手动卸载 APK。
+
+随安装包分发的 Inno Setup 简体中文翻译采用 MIT 许可证，许可证文本位于 `packaging\licenses`。

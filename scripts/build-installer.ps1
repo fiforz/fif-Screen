@@ -9,6 +9,8 @@ param(
 
     [string]$UpdateManifestUrl = '',
 
+    [string]$ReleaseApiUrl = 'https://api.github.com/repos/fiforz/fif-Screen/releases/latest',
+
     [string]$UpdateBaseUrl = '',
 
     [switch]$SkipBuild
@@ -33,12 +35,12 @@ if ($DriverFlavor -eq 'Production') {
     if (-not $ApkWasProvided) {
         throw 'Production packaging requires -ApkPath with a release-signed Android APK.'
     }
-    if (-not $UpdateManifestUrl) {
-        throw 'Production packaging requires -UpdateManifestUrl with an HTTPS endpoint.'
+    if (-not $ReleaseApiUrl) {
+        throw 'Production packaging requires -ReleaseApiUrl with an HTTPS endpoint.'
     }
 }
 
-foreach ($candidateUrl in @($UpdateManifestUrl, $UpdateBaseUrl)) {
+foreach ($candidateUrl in @($UpdateManifestUrl, $ReleaseApiUrl, $UpdateBaseUrl)) {
     if ($candidateUrl) {
         $uri = [Uri]$candidateUrl
         if (-not $uri.IsAbsoluteUri -or $uri.Scheme -ne 'https') {
@@ -419,6 +421,8 @@ $updateConfig = [ordered]@{
     currentVersion = $Version
     architecture = 'x64'
     manifestUrl = $UpdateManifestUrl
+    releaseApiUrl = $ReleaseApiUrl
+    repositoryUrl = 'https://github.com/fiforz/fif-Screen'
     requireAuthenticode = $DriverFlavor -eq 'Production'
 }
 $updateConfig | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $stageDir 'update.json') -Encoding UTF8
@@ -438,7 +442,7 @@ $env:FIFSCREEN_OUTPUT_BASENAME = $outputBaseName
 $env:FIFSCREEN_DRIVER_FLAVOR = $DriverFlavor
 $env:FIFSCREEN_EDITION_LABEL = $editionLabel
 $env:FIFSCREEN_UPDATE_CHANNEL = if ($DriverFlavor -eq 'Production') { 'stable' } else { 'development' }
-$env:FIFSCREEN_UPDATE_MANIFEST_URL = $UpdateManifestUrl
+$env:FIFSCREEN_RELEASE_API_URL = $ReleaseApiUrl
 
 Invoke-Checked -FilePath $Iscc -Arguments @((Join-Path $RepoRoot 'packaging\FifScreen.iss')) -Description 'Compile FifScreen Setup'
 

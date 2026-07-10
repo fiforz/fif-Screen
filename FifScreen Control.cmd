@@ -1,2 +1,2 @@
 @echo off
-powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "%~dp0scripts\fifscreen-control.ps1"
+powershell.exe -NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "%~dp0scripts\fifscreen-control.ps1"

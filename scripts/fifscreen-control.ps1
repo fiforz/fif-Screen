@@ -1,5 +1,5 @@
-param(
-    [ValidateSet('Gui', 'Start', 'Stop', 'Reconnect', 'Status')]
+﻿param(
+    [ValidateSet('Gui', 'Start', 'Stop', 'Reconnect', 'Status', 'CheckUpdate')]
     [string]$Action = 'Gui'
 )
 
@@ -17,12 +17,14 @@ if ($InstalledLayout) {
     $ApkPath = Join-Path $RuntimeRoot 'android\FifScreen.apk'
     $HostPath = Join-Path $RuntimeRoot 'bin\fif-host.exe'
     $LauncherPath = Join-Path $RuntimeRoot 'bin\fif-idd-device-launcher.exe'
+    $UpdateScriptPath = Join-Path $RepoRoot 'maintenance\check-update.ps1'
     $ArtifactDir = Join-Path $env:LOCALAPPDATA 'FifScreen\logs'
 } else {
     $AdbPath = Join-Path $RepoRoot 'tools\android-sdk\platform-tools\adb.exe'
     $ApkPath = Join-Path $RepoRoot 'android-client\build\outputs\apk\debug\android-client-debug.apk'
     $HostPath = Join-Path $RepoRoot 'build\host\windows-host\fif-host.exe'
     $LauncherPath = Join-Path $RepoRoot 'build\stage-driver-gate-clean\windows-driver\FifIddDeviceLauncher\fif-idd-device-launcher.exe'
+    $UpdateScriptPath = Join-Path $RepoRoot 'packaging\scripts\check-update.ps1'
     $ArtifactDir = Join-Path $RepoRoot 'artifacts\control-panel'
 }
 
@@ -112,14 +114,128 @@ function Invoke-Captured {
     }
 }
 
+function Start-UpdateCheck {
+    param([switch]$Background)
+
+    if (-not (Test-Path -LiteralPath $UpdateScriptPath)) {
+        Add-Log "找不到更新程序：$UpdateScriptPath"
+        return
+    }
+
+    $arguments = @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', $UpdateScriptPath,
+        '-InstallDir', $RepoRoot,
+        '-CurrentVersion', $AppVersion
+    )
+    if ($Background) {
+        $arguments += @('-Background', '-ParentProcessId', [string]$PID)
+    } else {
+        Add-Log '正在连接 GitHub 检查更新'
+    }
+
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+    $psi.Arguments = (($arguments | ForEach-Object {
+        ConvertTo-NativeArgument -Value ([string]$_)
+    }) -join ' ')
+    $psi.WorkingDirectory = $RepoRoot
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    [void][System.Diagnostics.Process]::Start($psi)
+}
+
 function Invoke-UiAction {
     param([scriptblock]$Action)
 
     try {
         & $Action
     } catch {
-        Add-Log ("error: " + $_.Exception.Message)
+        Add-Log ("错误：" + $_.Exception.Message)
     }
+}
+
+function Show-UsageTutorial {
+    $tutorialForm = [System.Windows.Forms.Form]::new()
+    $tutorialForm.Text = 'FifScreen 中文使用教程'
+    $tutorialForm.Size = [System.Drawing.Size]::new(720, 620)
+    $tutorialForm.StartPosition = 'CenterParent'
+    $tutorialForm.MinimumSize = [System.Drawing.Size]::new(620, 500)
+    $tutorialForm.Font = [System.Drawing.Font]::new('Microsoft YaHei UI', 9)
+
+    $tutorialText = [System.Windows.Forms.RichTextBox]::new()
+    $tutorialText.Dock = 'Fill'
+    $tutorialText.ReadOnly = $true
+    $tutorialText.BackColor = [System.Drawing.SystemColors]::Window
+    $tutorialText.BorderStyle = 'None'
+    $tutorialText.Font = [System.Drawing.Font]::new('Microsoft YaHei UI', 10)
+    $tutorialText.Text = @"
+一、在 Android 设备上开启开发者模式
+
+1. 打开“设置”，进入“关于手机”或“关于平板”。
+2. 连续点击“版本号”或“内部版本号”约 7 次。
+3. 按系统提示输入锁屏密码，看到“您已处于开发者模式”即可。
+
+常见品牌入口：
+• 华为/荣耀：设置 → 关于手机/平板 → 连续点击版本号；然后进入“系统和更新 → 开发人员选项”。
+• 小米/红米：设置 → 我的设备 → 全部参数与信息 → 连续点击 MIUI/OS 版本；然后进入“更多设置 → 开发者选项”。
+• 三星：设置 → 关于手机 → 软件信息 → 连续点击编译编号；然后返回设置底部进入“开发者选项”。
+• 其他设备：在设置中搜索“版本号”“编译编号”或“开发者选项”。
+
+二、开启 USB 调试
+
+1. 进入“开发者选项”。
+2. 打开“USB 调试”。部分系统还需要打开“仅充电模式下允许 ADB 调试”或“USB 调试（安全设置）”。
+3. 使用支持数据传输的 USB 线连接电脑；仅能充电的线无法使用。
+4. 手机弹出“是否允许 USB 调试”时，勾选“始终允许使用这台计算机进行调试”，再点击“允许”。
+
+三、启动 FifScreen
+
+1. 保持手机解锁并连接电脑。
+2. 在 FifScreen 控制中心点击“启动扩展屏”。程序会配置 USB 通道、安装或更新手机端 APK，并启动扩展显示。
+3. Windows 的“设置 → 系统 → 显示”中可以调整扩展屏的位置、方向和缩放比例。
+4. USB 重新插拔后，点击“重新连接手机”。
+5. 不再使用时点击“停止扩展屏”。
+
+四、常见问题
+
+• 显示“未连接”：确认 USB 调试授权没有被拒绝，更换数据线或 USB 接口后重新连接。
+• 手机只充电：从 USB 用途通知中选择“文件传输”，再重新授权 USB 调试。
+• 画面卡顿：关闭手机省电模式，避免通过 USB 集线器连接，并保持电脑显卡驱动为较新版本。
+• 更换手机：新设备必须重新完成一次 USB 调试授权，然后点击“重新连接手机”。
+"@
+
+    $closeButton = [System.Windows.Forms.Button]::new()
+    $closeButton.Text = '关闭'
+    $closeButton.Dock = 'Bottom'
+    $closeButton.Height = 42
+    $closeButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
+
+    $tutorialForm.Controls.Add($tutorialText)
+    $tutorialForm.Controls.Add($closeButton)
+    $tutorialForm.AcceptButton = $closeButton
+    [void]$tutorialForm.ShowDialog($form)
+}
+
+function Show-AboutFifScreen {
+    $message = @"
+FifScreen $AppVersion
+
+将 Android 手机或平板作为 Windows 的真实扩展显示器。
+
+项目主页：
+https://github.com/fiforz/fif-Screen
+
+当前视频模式：1920 × 1080，目标 50 FPS
+"@
+    [void][System.Windows.Forms.MessageBox]::Show(
+        $form,
+        $message,
+        '关于 FifScreen',
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Information
+    )
 }
 
 function Get-AdbDevices {
@@ -181,12 +297,12 @@ function Ensure-Host {
     param([string]$Serial)
     $existing = Get-Process fif-host -ErrorAction SilentlyContinue
     if ($existing) {
-        Add-Log "host already running: PID $($existing[0].Id)"
+        Add-Log "Windows 主机服务已运行：PID $($existing[0].Id)"
         return
     }
 
     if (-not (Test-Path $HostPath)) {
-        Add-Log "host missing: $HostPath"
+        Add-Log "找不到 Windows 主机程序：$HostPath"
         return
     }
 
@@ -206,25 +322,25 @@ function Ensure-Host {
         -RedirectStandardOutput $out -RedirectStandardError $err `
         -WindowStyle Hidden -PassThru
     Start-Sleep -Milliseconds 700
-    Add-Log "host started: PID $($process.Id)"
+    Add-Log "Windows 主机服务已启动：PID $($process.Id)"
 }
 
 function Ensure-SoftwareDevice {
     $status = Get-LauncherStatus
     if ($status.Owner -and $status.Device) {
-        Add-Log 'extension device owner is running'
+        Add-Log '扩展显示设备已运行'
         return
     }
     if (-not $status.Owner -and $status.Device) {
-        Add-Log 'warning: extension device exists but owner is not running; using existing display node'
+        Add-Log '警告：扩展显示设备存在，但所有者进程未运行；继续使用现有显示节点'
         return
     }
     if ($status.Owner -and -not $status.Device) {
-        Add-Log 'warning: owner exists but display node is missing; not creating duplicate'
+        Add-Log '警告：所有者进程存在，但显示节点缺失；不会重复创建设备'
         return
     }
 
-    Add-Log 'creating extension display owner process'
+    Add-Log '正在创建扩展显示设备'
     $out = Join-Path $ArtifactDir 'device-owner.out.log'
     $err = Join-Path $ArtifactDir 'device-owner.err.log'
     $ownerProcess = Start-Process -FilePath $LauncherPath -ArgumentList 'create' -WorkingDirectory $RepoRoot `
@@ -235,7 +351,7 @@ function Ensure-SoftwareDevice {
         Start-Sleep -Milliseconds 500
         $current = Get-LauncherStatus
         if ($current.Owner -and $current.Device) {
-            Add-Log "extension display online: owner PID $($ownerProcess.Id)"
+            Add-Log "扩展显示设备已上线：所有者 PID $($ownerProcess.Id)"
             return
         }
         if ($ownerProcess.HasExited) {
@@ -248,7 +364,7 @@ function Ensure-SoftwareDevice {
     if (Test-Path $err) {
         $details = ($details + "`n" + (Get-Content -LiteralPath $err -Raw -ErrorAction SilentlyContinue)).Trim()
     }
-    throw "extension display failed to start: $details"
+    throw "扩展显示设备启动失败：$details"
 }
 
 function Configure-Android {
@@ -257,44 +373,44 @@ function Configure-Android {
         [bool]$InstallApk = $false
     )
     if (-not $Serial) {
-        Add-Log 'Android device not found; host will keep waiting'
+        Add-Log '未发现 Android 设备，Windows 主机服务将继续等待'
         return
     }
-    Add-Log "Android device: $Serial"
+    Add-Log "Android 设备：$Serial"
     Invoke-Captured -FilePath $AdbPath -Arguments @('-s', $Serial, 'reverse', 'tcp:27183', 'tcp:27183') -TimeoutMs 10000 | Out-Null
     Invoke-Captured -FilePath $AdbPath -Arguments @('-s', $Serial, 'reverse', 'tcp:27184', 'tcp:27184') -TimeoutMs 10000 | Out-Null
 
     if ($InstallApk) {
         if (-not (Test-Path -LiteralPath $ApkPath)) {
-            throw "Android APK is missing: $ApkPath"
+            throw "找不到 Android APK：$ApkPath"
         }
 
         $package = Get-AndroidPackageInfo -Serial $Serial
         $installRequired = -not $package.Installed
         if ($package.Installed -and $BundledAndroidVersionCode -gt 0) {
             if ($package.VersionCode -eq $BundledAndroidVersionCode) {
-                Add-Log "Android app is current: versionCode $($package.VersionCode)"
+                Add-Log "Android 应用已是当前版本：versionCode $($package.VersionCode)"
             } elseif ($package.VersionCode -gt $BundledAndroidVersionCode) {
-                Add-Log "Android app is newer than the bundled APK; keeping versionCode $($package.VersionCode)"
+                Add-Log "手机上的 Android 应用版本更新，保留 versionCode $($package.VersionCode)"
             } else {
                 $installRequired = $true
-                Add-Log "updating Android app: versionCode $($package.VersionCode) -> $BundledAndroidVersionCode"
+                Add-Log "正在更新 Android 应用：versionCode $($package.VersionCode) -> $BundledAndroidVersionCode"
             }
         } elseif ($package.Installed) {
             $installRequired = $true
-            Add-Log 'Android app version could not be read; refreshing from the bundled APK'
+            Add-Log '无法读取 Android 应用版本，将使用安装包内 APK 覆盖更新'
         }
 
         if ($installRequired) {
             if (-not $package.Installed) {
-                Add-Log 'installing Android app'
+                Add-Log '正在安装 Android 应用'
             }
             $install = Invoke-Captured -FilePath $AdbPath `
                 -Arguments @('-s', $Serial, 'install', '-r', $ApkPath) -TimeoutMs 120000
             $installText = ($install.Output + $install.Error).Trim()
 
             if ($install.ExitCode -ne 0 -and $installText -match 'INSTALL_FAILED_UPDATE_INCOMPATIBLE') {
-                Add-Log 'existing APK has a different signature; replacing it'
+                Add-Log '现有 APK 签名不同，正在替换安装'
                 $remove = Invoke-Captured -FilePath $AdbPath `
                     -Arguments @('-s', $Serial, 'uninstall', 'com.fif.screen') -TimeoutMs 30000
                 if ($remove.ExitCode -eq 0) {
@@ -305,20 +421,20 @@ function Configure-Android {
             }
 
             if ($install.ExitCode -ne 0) {
-                throw "Android app installation failed: $installText"
+                throw "Android 应用安装失败：$installText"
             }
-            Add-Log "Android app ready: versionCode $BundledAndroidVersionCode"
+            Add-Log "Android 应用已就绪：versionCode $BundledAndroidVersionCode"
         }
     }
 
     Invoke-Captured -FilePath $AdbPath -Arguments @('-s', $Serial, 'shell', 'input', 'keyevent', 'WAKEUP') -TimeoutMs 10000 | Out-Null
     Invoke-Captured -FilePath $AdbPath -Arguments @('-s', $Serial, 'shell', 'wm', 'dismiss-keyguard') -TimeoutMs 10000 | Out-Null
     Invoke-Captured -FilePath $AdbPath -Arguments @('-s', $Serial, 'shell', 'am', 'start', '-n', 'com.fif.screen/.MainActivity') -TimeoutMs 15000 | Out-Null
-    Add-Log 'Android app launched'
+    Add-Log 'Android 应用已启动'
 }
 
 function Start-FifScreen {
-    Add-Log 'starting extension screen'
+    Add-Log '正在启动扩展屏'
     Ensure-SoftwareDevice
     $serial = Get-AdbSerial
     Ensure-Host -Serial $serial
@@ -327,29 +443,29 @@ function Start-FifScreen {
 }
 
 function Stop-FifScreen {
-    Add-Log 'stopping extension screen'
+    Add-Log '正在停止扩展屏'
     $serial = Get-AdbSerial
     if ($serial) {
         Invoke-Captured -FilePath $AdbPath -Arguments @('-s', $serial, 'shell', 'am', 'force-stop', 'com.fif.screen') -TimeoutMs 10000 | Out-Null
     }
     Get-Process fif-host -ErrorAction SilentlyContinue | Stop-Process -Force
-    Add-Log 'host stopped'
+    Add-Log 'Windows 主机服务已停止'
 
     $status = Get-LauncherStatus
     if ($status.Owner) {
-        Add-Log 'removing extension display through owner stop signal'
+        Add-Log '正在通过所有者进程关闭扩展显示设备'
         $remove = Invoke-Captured -FilePath $LauncherPath -Arguments @('remove') -TimeoutMs 30000
         Add-Log (($remove.Output + $remove.Error).Trim())
     } elseif ($status.Device) {
-        Add-Log 'warning: display node exists without owner; not doing unsafe PnP removal'
+        Add-Log '警告：显示节点存在但没有所有者进程，不执行不安全的 PnP 删除'
     } else {
-        Add-Log 'extension display already off'
+        Add-Log '扩展显示设备已经关闭'
     }
     Refresh-Status
 }
 
 function Reconnect-Android {
-    Add-Log 'reconnecting Android'
+    Add-Log '正在重新连接 Android 设备'
     $serial = Get-AdbSerial
     Ensure-Host -Serial $serial
     Configure-Android -Serial $serial
@@ -361,10 +477,10 @@ function Refresh-Status {
     $hostProcess = Get-Process fif-host -ErrorAction SilentlyContinue
     $launcher = Get-LauncherStatus
     $summary = @()
-    $summary += if ($serial) { "Android: $serial" } else { 'Android: not connected' }
-    $summary += if ($hostProcess) { "Host: running PID $($hostProcess[0].Id)" } else { 'Host: stopped' }
-    $summary += if ($launcher.Owner) { 'Owner: running' } else { 'Owner: not running' }
-    $summary += if ($launcher.Device) { 'Display node: present' } else { 'Display node: absent' }
+    $summary += if ($serial) { "Android：$serial" } else { 'Android：未连接' }
+    $summary += if ($hostProcess) { "主机服务：运行中 PID $($hostProcess[0].Id)" } else { '主机服务：已停止' }
+    $summary += if ($launcher.Owner) { '设备所有者：运行中' } else { '设备所有者：未运行' }
+    $summary += if ($launcher.Device) { '扩展显示：已存在' } else { '扩展显示：不存在' }
     if ($null -ne $statusLabel -and -not $statusLabel.IsDisposed) {
         $statusLabel.Text = ($summary -join '    ')
     }
@@ -377,58 +493,79 @@ if ($Action -ne 'Gui') {
         'Stop' { Stop-FifScreen }
         'Reconnect' { Reconnect-Android }
         'Status' { Refresh-Status }
+        'CheckUpdate' { Start-UpdateCheck }
     }
     exit 0
 }
 
 $form = [System.Windows.Forms.Form]::new()
-$form.Text = "FifScreen Control $AppVersion - 1080p"
-$form.Size = [System.Drawing.Size]::new(820, 520)
+$form.Text = "FifScreen 控制中心 $AppVersion - 1080p"
+$form.Size = [System.Drawing.Size]::new(860, 560)
 $form.StartPosition = 'CenterScreen'
+$form.Font = [System.Drawing.Font]::new('Microsoft YaHei UI', 9)
+
+$menuStrip = [System.Windows.Forms.MenuStrip]::new()
+$aboutMenu = [System.Windows.Forms.ToolStripMenuItem]::new('关于')
+$checkUpdateMenu = [System.Windows.Forms.ToolStripMenuItem]::new('检查更新')
+$checkUpdateMenu.Add_Click({ Invoke-UiAction -Action { Start-UpdateCheck } })
+$tutorialMenu = [System.Windows.Forms.ToolStripMenuItem]::new('使用教程')
+$tutorialMenu.Add_Click({ Invoke-UiAction -Action { Show-UsageTutorial } })
+$aboutProductMenu = [System.Windows.Forms.ToolStripMenuItem]::new('关于 FifScreen')
+$aboutProductMenu.Add_Click({ Invoke-UiAction -Action { Show-AboutFifScreen } })
+[void]$aboutMenu.DropDownItems.Add($checkUpdateMenu)
+[void]$aboutMenu.DropDownItems.Add($tutorialMenu)
+[void]$aboutMenu.DropDownItems.Add([System.Windows.Forms.ToolStripSeparator]::new())
+[void]$aboutMenu.DropDownItems.Add($aboutProductMenu)
+[void]$menuStrip.Items.Add($aboutMenu)
+$form.MainMenuStrip = $menuStrip
+$form.Controls.Add($menuStrip)
 
 $statusLabel = [System.Windows.Forms.Label]::new()
 $statusLabel.AutoSize = $false
-$statusLabel.Location = [System.Drawing.Point]::new(16, 16)
-$statusLabel.Size = [System.Drawing.Size]::new(770, 44)
-$statusLabel.Text = 'Status: loading'
+$statusLabel.Location = [System.Drawing.Point]::new(16, 36)
+$statusLabel.Size = [System.Drawing.Size]::new(810, 44)
+$statusLabel.Text = '状态：正在读取'
 $form.Controls.Add($statusLabel)
 
 $startButton = [System.Windows.Forms.Button]::new()
-$startButton.Text = 'Start Display'
-$startButton.Location = [System.Drawing.Point]::new(16, 72)
+$startButton.Text = '启动扩展屏'
+$startButton.Location = [System.Drawing.Point]::new(16, 88)
 $startButton.Size = [System.Drawing.Size]::new(150, 42)
 $startButton.Add_Click({ Invoke-UiAction -Action { Start-FifScreen } })
 $form.Controls.Add($startButton)
 
 $stopButton = [System.Windows.Forms.Button]::new()
-$stopButton.Text = 'Stop Display'
-$stopButton.Location = [System.Drawing.Point]::new(182, 72)
+$stopButton.Text = '停止扩展屏'
+$stopButton.Location = [System.Drawing.Point]::new(182, 88)
 $stopButton.Size = [System.Drawing.Size]::new(150, 42)
 $stopButton.Add_Click({ Invoke-UiAction -Action { Stop-FifScreen } })
 $form.Controls.Add($stopButton)
 
 $reconnectButton = [System.Windows.Forms.Button]::new()
-$reconnectButton.Text = 'Reconnect Phone'
-$reconnectButton.Location = [System.Drawing.Point]::new(348, 72)
+$reconnectButton.Text = '重新连接手机'
+$reconnectButton.Location = [System.Drawing.Point]::new(348, 88)
 $reconnectButton.Size = [System.Drawing.Size]::new(150, 42)
 $reconnectButton.Add_Click({ Invoke-UiAction -Action { Reconnect-Android } })
 $form.Controls.Add($reconnectButton)
 
 $statusButton = [System.Windows.Forms.Button]::new()
-$statusButton.Text = 'Refresh Status'
-$statusButton.Location = [System.Drawing.Point]::new(514, 72)
+$statusButton.Text = '刷新状态'
+$statusButton.Location = [System.Drawing.Point]::new(514, 88)
 $statusButton.Size = [System.Drawing.Size]::new(150, 42)
 $statusButton.Add_Click({ Invoke-UiAction -Action { Refresh-Status } })
 $form.Controls.Add($statusButton)
 
 $logBox = [System.Windows.Forms.TextBox]::new()
-$logBox.Location = [System.Drawing.Point]::new(16, 130)
-$logBox.Size = [System.Drawing.Size]::new(770, 330)
+$logBox.Location = [System.Drawing.Point]::new(16, 146)
+$logBox.Size = [System.Drawing.Size]::new(810, 360)
 $logBox.Multiline = $true
 $logBox.ScrollBars = 'Vertical'
 $logBox.ReadOnly = $true
 $logBox.Font = [System.Drawing.Font]::new('Consolas', 9)
 $form.Controls.Add($logBox)
 
-$form.Add_Shown({ Invoke-UiAction -Action { Refresh-Status } })
+$form.Add_Shown({
+    Invoke-UiAction -Action { Refresh-Status }
+    Invoke-UiAction -Action { Start-UpdateCheck -Background }
+})
 [void]$form.ShowDialog()

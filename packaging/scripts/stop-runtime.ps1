@@ -16,7 +16,7 @@ if (Test-Path -LiteralPath $launcherPath) {
 $normalizedInstallDir = [IO.Path]::GetFullPath($InstallDir).TrimEnd('\') + '\'
 Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
     Where-Object {
-        $_.Name -in @('fif-host.exe', 'fif-idd-device-launcher.exe') -and
+        $_.Name -in @('fif-host.exe', 'fif-idd-device-launcher.exe', 'adb.exe') -and
         $_.ExecutablePath -and
         [IO.Path]::GetFullPath($_.ExecutablePath).StartsWith($normalizedInstallDir, [StringComparison]::OrdinalIgnoreCase)
     } |
