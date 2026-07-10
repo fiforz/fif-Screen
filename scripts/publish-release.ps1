@@ -43,6 +43,10 @@ $remote = (& git -C $RepoRoot remote get-url origin).Trim()
 if ($remote -ne "git@github.com:$Repository.git") {
     throw "origin 必须使用 SSH 地址 git@github.com:$Repository.git，当前为：$remote"
 }
+$ResolvedTargetCommit = (& git -C $RepoRoot rev-parse "${TargetCommit}^{commit}").Trim()
+if ($LASTEXITCODE -ne 0 -or $ResolvedTargetCommit -notmatch '^[0-9a-fA-F]{40}$') {
+    throw "无法解析发布目标提交：$TargetCommit"
+}
 
 function Get-GitHubApiHeaders {
     $credentialInput = "protocol=https`nhost=github.com`n`n"
@@ -88,7 +92,7 @@ function Publish-WithGitHubApi {
     $releaseBody = [IO.File]::ReadAllText($resolvedNotesPath, [Text.UTF8Encoding]::new($false))
     $payload = [ordered]@{
         tag_name = $Tag
-        target_commitish = $TargetCommit
+        target_commitish = $ResolvedTargetCommit
         name = "FifScreen $Version"
         body = $releaseBody
         draft = $false
@@ -141,7 +145,7 @@ if ($LASTEXITCODE -ne 0) {
 
 $localTag = & git -C $RepoRoot tag --list $tag
 if (-not $localTag) {
-    & git -C $RepoRoot tag -a $tag $TargetCommit -m "FifScreen $Version"
+    & git -C $RepoRoot tag -a $tag $ResolvedTargetCommit -m "FifScreen $Version"
     if ($LASTEXITCODE -ne 0) {
         throw "创建标签 $tag 失败。"
     }
