@@ -84,7 +84,8 @@ function Publish-WithGitHubApi {
         }
     }
 
-    $releaseBody = Get-Content -LiteralPath $NotesPath -Raw
+    $resolvedNotesPath = (Resolve-Path -LiteralPath $NotesPath).Path
+    $releaseBody = [IO.File]::ReadAllText($resolvedNotesPath, [Text.UTF8Encoding]::new($false))
     $payload = [ordered]@{
         tag_name = $Tag
         target_commitish = $TargetCommit
@@ -113,7 +114,7 @@ function Publish-WithGitHubApi {
             Invoke-RestMethod -Method Delete -Uri "$apiRoot/releases/assets/$($existingAsset.id)" `
                 -Headers $Headers -TimeoutSec 30 | Out-Null
         }
-        $uploadUrl = "$uploadRoot?name=$([Uri]::EscapeDataString($assetName))"
+        $uploadUrl = "${uploadRoot}?name=$([Uri]::EscapeDataString($assetName))"
         $contentType = if ($assetName.EndsWith('.sha256')) { 'text/plain' } else { 'application/octet-stream' }
         Invoke-RestMethod -Method Post -Uri $uploadUrl -Headers $Headers `
             -ContentType $contentType -InFile $assetPath -TimeoutSec 300 | Out-Null
