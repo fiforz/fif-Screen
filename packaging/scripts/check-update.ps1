@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$InstallDir = (Split-Path -Parent $PSScriptRoot),
+    [string]$InstallDir = '',
     [string]$ReleaseApiUrl = '',
     [string]$FallbackManifestUrl = '',
     [string]$CurrentVersion = '',
@@ -10,7 +10,14 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Net.ServicePointManager]::SecurityProtocol = `
+    [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 Add-Type -AssemblyName System.Windows.Forms
+
+if ([string]::IsNullOrWhiteSpace($InstallDir)) {
+    $InstallDir = Split-Path -Parent $PSScriptRoot
+}
 
 $DefaultReleaseApiUrl = 'https://api.github.com/repos/fiforz/fif-Screen/releases/latest'
 $DefaultFallbackManifestUrl = 'https://github.com/fiforz/fif-Screen/releases/latest/download/latest-development.json'
@@ -84,6 +91,24 @@ function Get-GitHubHeaders {
         'X-GitHub-Api-Version' = '2022-11-28'
         'User-Agent' = "FifScreen-Updater/$VersionText"
     }
+}
+
+function ConvertFrom-WebResponseJson {
+    param([Parameter(Mandatory = $true)]$Response)
+
+    $content = $Response.Content
+    $json = if ($content -is [byte[]]) {
+        [Text.Encoding]::UTF8.GetString($content)
+    } else {
+        [string]$content
+    }
+    if ($json.Length -gt 0 -and $json[0] -eq [char]0xFEFF) {
+        $json = $json.Substring(1)
+    }
+    if ([string]::IsNullOrWhiteSpace($json)) {
+        throw 'GitHub 返回了空的 JSON 响应。'
+    }
+    return $json | ConvertFrom-Json
 }
 
 function Resolve-GitHubRelease {
@@ -254,7 +279,9 @@ function Get-LatestUpdate {
             -AllowedHosts @('raw.githubusercontent.com', 'github.com') `
             -Description '静态更新清单地址' | Out-Null
         $headers = Get-GitHubHeaders -VersionText $VersionText
-        $manifest = Invoke-RestMethod -Uri $ManifestUrl -Headers $headers -TimeoutSec 20
+        $response = Invoke-WebRequest -Uri $ManifestUrl -Headers $headers `
+            -UseBasicParsing -TimeoutSec 20
+        $manifest = ConvertFrom-WebResponseJson -Response $response
         $release = Resolve-UpdateManifest -Manifest $manifest -ExpectedChannel $Channel `
             -RequireAuthenticode $RequireAuthenticode
         Write-UpdateLog '已通过仓库静态清单获取最新版本'
@@ -380,6 +407,13 @@ function Invoke-SelfTest {
     if ($manifestResult.VersionText -ne '9.8.7' -or
         $manifestResult.ExpectedHash -ne '0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF') {
         throw '静态更新清单自检失败。'
+    }
+    $jsonBytes = [Text.Encoding]::UTF8.GetBytes(($fakeManifest | ConvertTo-Json -Depth 4))
+    $manifestBytes = [byte[]]([Text.Encoding]::UTF8.GetPreamble() + $jsonBytes)
+    $decodedManifest = ConvertFrom-WebResponseJson -Response ([pscustomobject]@{ Content = $manifestBytes })
+    $decodedResult = Resolve-UpdateManifest -Manifest $decodedManifest -ExpectedChannel 'development'
+    if ($decodedResult.VersionText -ne '9.8.7') {
+        throw '二进制静态更新清单解码自检失败。'
     }
     Write-Output 'UPDATE_SELF_TEST=PASS'
 }

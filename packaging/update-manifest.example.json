@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "product": "FifScreen",
   "channel": "stable",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "architecture": "x64",
-  "installerUrl": "https://github.com/fiforz/fif-Screen/releases/download/v0.3.1/FifScreen-Setup-0.3.1-x64.exe",
+  "installerUrl": "https://github.com/fiforz/fif-Screen/releases/download/v0.3.2/FifScreen-Setup-0.3.2-x64.exe",
   "sha256": "REPLACE_WITH_64_HEX_CHARACTERS",
-  "releaseNotesUrl": "https://github.com/fiforz/fif-Screen/releases/tag/v0.3.1"
+  "releaseNotesUrl": "https://github.com/fiforz/fif-Screen/releases/tag/v0.3.2"
 }

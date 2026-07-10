@@ -2,12 +2,12 @@
     "schemaVersion":  1,
     "product":  "FifScreen",
     "channel":  "development",
-    "version":  "0.3.1",
+    "version":  "0.3.2",
     "architecture":  "x64",
-    "publishedAt":  "2026-07-10T13:11:15.9495492Z",
-    "releaseNotes":  "# FifScreen 0.3.1\n\n本版本修复检查更新的间歇性超时，并强制 Windows 控制中心使用管理员权限运行。\n\n## 更新内容\n\n- 控制中心启动时检查当前进程是否具有管理员权限；\n- 非管理员启动时弹出“请以管理员身份运行 FifScreen 控制中心”，点击确定后立即退出；\n- 手动检查更新失败后自动重试三次，不再因一次短暂超时立即报错；\n- GitHub Release API 超时时自动回退到最新 Release 的静态更新清单资产；\n- API 和静态清单均失败后，才显示网络环境提示；\n- 后台自动检查继续静默退避重试。\n\n## 安装说明\n\n这是开发预览版，包含测试签名显示驱动。Windows 必须已允许测试签名驱动，安装程序不会修改 BCD 或安全启动设置。\n",
-    "installerName":  "FifScreen-Setup-0.3.1-dev-x64.exe",
-    "installerUrl":  "https://github.com/fiforz/fif-Screen/releases/download/v0.3.1/FifScreen-Setup-0.3.1-dev-x64.exe",
-    "sha256":  "F6D3339AD9B342CECC13B7AF1EDE60B66C95829213D97D281CBD7F583C30B0DC",
-    "releaseUrl":  "https://github.com/fiforz/fif-Screen/releases/tag/v0.3.1"
+    "publishedAt":  "2026-07-10T13:20:08.8825730Z",
+    "releaseNotes":  "# FifScreen 0.3.2\n\n本版本修复 Windows PowerShell 5.1 读取 GitHub Release 静态更新清单时的兼容性问题。\n\n## 更新内容\n\n- GitHub Release API 暂时不可用时，继续回退到最新 Release 的静态更新清单；\n- 对 `application/octet-stream` 返回的清单内容显式执行 UTF-8 解码，不再把字节数组误当成 JSON 对象；\n- 静态清单解析完成后继续校验产品、更新通道、架构、版本、安装包地址和 SHA-256；\n- 更新检查显式启用 TLS 1.2，并关闭 PowerShell 下载进度渲染，降低请求阻塞概率；\n- 增加二进制静态清单解析的自动回归测试。\n\n## 安装说明\n\n这是开发预览版，包含测试签名显示驱动。Windows 必须已允许测试签名驱动，安装程序不会修改 BCD 或安全启动设置。\n",
+    "installerName":  "FifScreen-Setup-0.3.2-dev-x64.exe",
+    "installerUrl":  "https://github.com/fiforz/fif-Screen/releases/download/v0.3.2/FifScreen-Setup-0.3.2-dev-x64.exe",
+    "sha256":  "6331A2C090AAE37EB4E17095CFE6CCD7F0D16B6656C2808957523EFB1A6B4F92",
+    "releaseUrl":  "https://github.com/fiforz/fif-Screen/releases/tag/v0.3.2"
 }
