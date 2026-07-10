@@ -3,6 +3,9 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val fifVersionName = rootProject.file("VERSION").readText().trim()
+val fifVersionCode = rootProject.file("VERSION_CODE").readText().trim().toInt()
+
 android {
     namespace = "com.fif.screen"
     compileSdk = 35
@@ -11,8 +14,8 @@ android {
         applicationId = "com.fif.screen"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = fifVersionCode
+        versionName = fifVersionName
     }
 
     compileOptions {

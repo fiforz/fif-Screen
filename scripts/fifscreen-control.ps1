@@ -9,11 +9,44 @@ Add-Type -AssemblyName System.Drawing
 $ErrorActionPreference = 'Stop'
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
-$AdbPath = Join-Path $RepoRoot 'tools\android-sdk\platform-tools\adb.exe'
-$ApkPath = Join-Path $RepoRoot 'android-client\build\outputs\apk\debug\android-client-debug.apk'
-$HostPath = Join-Path $RepoRoot 'build\host\windows-host\fif-host.exe'
-$LauncherPath = Join-Path $RepoRoot 'build\stage-driver-gate-clean\windows-driver\FifIddDeviceLauncher\fif-idd-device-launcher.exe'
-$ArtifactDir = Join-Path $RepoRoot 'artifacts\control-panel'
+$RuntimeRoot = Join-Path $RepoRoot 'runtime'
+$InstalledLayout = Test-Path (Join-Path $RuntimeRoot 'bin\fif-host.exe')
+
+if ($InstalledLayout) {
+    $AdbPath = Join-Path $RuntimeRoot 'adb\adb.exe'
+    $ApkPath = Join-Path $RuntimeRoot 'android\FifScreen.apk'
+    $HostPath = Join-Path $RuntimeRoot 'bin\fif-host.exe'
+    $LauncherPath = Join-Path $RuntimeRoot 'bin\fif-idd-device-launcher.exe'
+    $ArtifactDir = Join-Path $env:LOCALAPPDATA 'FifScreen\logs'
+} else {
+    $AdbPath = Join-Path $RepoRoot 'tools\android-sdk\platform-tools\adb.exe'
+    $ApkPath = Join-Path $RepoRoot 'android-client\build\outputs\apk\debug\android-client-debug.apk'
+    $HostPath = Join-Path $RepoRoot 'build\host\windows-host\fif-host.exe'
+    $LauncherPath = Join-Path $RepoRoot 'build\stage-driver-gate-clean\windows-driver\FifIddDeviceLauncher\fif-idd-device-launcher.exe'
+    $ArtifactDir = Join-Path $RepoRoot 'artifacts\control-panel'
+}
+
+$VersionPath = Join-Path $RepoRoot 'VERSION'
+$AppVersion = if (Test-Path $VersionPath) {
+    (Get-Content -LiteralPath $VersionPath -Raw).Trim()
+} else {
+    'unknown'
+}
+$BundledAndroidVersionCode = 0
+if ($InstalledLayout) {
+    $RuntimeManifestPath = Join-Path $RuntimeRoot 'manifest.json'
+    if (Test-Path -LiteralPath $RuntimeManifestPath) {
+        try {
+            $RuntimeManifest = Get-Content -LiteralPath $RuntimeManifestPath -Raw | ConvertFrom-Json
+            $BundledAndroidVersionCode = [int]$RuntimeManifest.android.versionCode
+        } catch {}
+    }
+} else {
+    $VersionCodePath = Join-Path $RepoRoot 'VERSION_CODE'
+    if (Test-Path -LiteralPath $VersionCodePath) {
+        $BundledAndroidVersionCode = [int](Get-Content -LiteralPath $VersionCodePath -Raw).Trim()
+    }
+}
 New-Item -ItemType Directory -Force -Path $ArtifactDir | Out-Null
 $ControlLogPath = Join-Path $ArtifactDir 'control.log'
 
@@ -106,6 +139,29 @@ function Get-AdbSerial {
         return $null
     }
     return (($devices[0] -split '\s+')[0])
+}
+
+function Get-AndroidPackageInfo {
+    param([string]$Serial)
+
+    $packagePath = Invoke-Captured -FilePath $AdbPath `
+        -Arguments @('-s', $Serial, 'shell', 'pm', 'path', 'com.fif.screen') -TimeoutMs 10000
+    $installed = $packagePath.ExitCode -eq 0 -and $packagePath.Output -match 'package:'
+    $versionCode = 0
+
+    if ($installed) {
+        $version = Invoke-Captured -FilePath $AdbPath `
+            -Arguments @('-s', $Serial, 'shell', 'cmd', 'package', 'list', 'packages', '--show-versioncode', 'com.fif.screen') `
+            -TimeoutMs 10000
+        if (($version.Output + $version.Error) -match 'versionCode:(\d+)') {
+            $versionCode = [int]$Matches[1]
+        }
+    }
+
+    return [pscustomobject]@{
+        Installed = $installed
+        VersionCode = $versionCode
+    }
 }
 
 function Get-LauncherStatus {
@@ -209,17 +265,49 @@ function Configure-Android {
     Invoke-Captured -FilePath $AdbPath -Arguments @('-s', $Serial, 'reverse', 'tcp:27184', 'tcp:27184') -TimeoutMs 10000 | Out-Null
 
     if ($InstallApk) {
-        $package = Invoke-Captured -FilePath $AdbPath `
-            -Arguments @('-s', $Serial, 'shell', 'pm', 'path', 'com.fif.screen') -TimeoutMs 10000
-        $packageInstalled = $package.ExitCode -eq 0 -and $package.Output -match 'package:'
-        if (-not $packageInstalled -and (Test-Path $ApkPath)) {
-            Add-Log 'installing Android app'
-            $install = Invoke-Captured -FilePath $AdbPath -Arguments @('-s', $Serial, 'install', '-r', $ApkPath) -TimeoutMs 120000
-            if ($install.ExitCode -ne 0) {
-                Add-Log ("install failed: " + ($install.Output + $install.Error).Trim())
+        if (-not (Test-Path -LiteralPath $ApkPath)) {
+            throw "Android APK is missing: $ApkPath"
+        }
+
+        $package = Get-AndroidPackageInfo -Serial $Serial
+        $installRequired = -not $package.Installed
+        if ($package.Installed -and $BundledAndroidVersionCode -gt 0) {
+            if ($package.VersionCode -eq $BundledAndroidVersionCode) {
+                Add-Log "Android app is current: versionCode $($package.VersionCode)"
+            } elseif ($package.VersionCode -gt $BundledAndroidVersionCode) {
+                Add-Log "Android app is newer than the bundled APK; keeping versionCode $($package.VersionCode)"
+            } else {
+                $installRequired = $true
+                Add-Log "updating Android app: versionCode $($package.VersionCode) -> $BundledAndroidVersionCode"
             }
-        } elseif ($packageInstalled) {
-            Add-Log 'Android app already installed'
+        } elseif ($package.Installed) {
+            $installRequired = $true
+            Add-Log 'Android app version could not be read; refreshing from the bundled APK'
+        }
+
+        if ($installRequired) {
+            if (-not $package.Installed) {
+                Add-Log 'installing Android app'
+            }
+            $install = Invoke-Captured -FilePath $AdbPath `
+                -Arguments @('-s', $Serial, 'install', '-r', $ApkPath) -TimeoutMs 120000
+            $installText = ($install.Output + $install.Error).Trim()
+
+            if ($install.ExitCode -ne 0 -and $installText -match 'INSTALL_FAILED_UPDATE_INCOMPATIBLE') {
+                Add-Log 'existing APK has a different signature; replacing it'
+                $remove = Invoke-Captured -FilePath $AdbPath `
+                    -Arguments @('-s', $Serial, 'uninstall', 'com.fif.screen') -TimeoutMs 30000
+                if ($remove.ExitCode -eq 0) {
+                    $install = Invoke-Captured -FilePath $AdbPath `
+                        -Arguments @('-s', $Serial, 'install', $ApkPath) -TimeoutMs 120000
+                    $installText = ($install.Output + $install.Error).Trim()
+                }
+            }
+
+            if ($install.ExitCode -ne 0) {
+                throw "Android app installation failed: $installText"
+            }
+            Add-Log "Android app ready: versionCode $BundledAndroidVersionCode"
         }
     }
 
@@ -294,7 +382,7 @@ if ($Action -ne 'Gui') {
 }
 
 $form = [System.Windows.Forms.Form]::new()
-$form.Text = 'FifScreen Control - 1080p Ready'
+$form.Text = "FifScreen Control $AppVersion - 1080p"
 $form.Size = [System.Drawing.Size]::new(820, 520)
 $form.StartPosition = 'CenterScreen'
 

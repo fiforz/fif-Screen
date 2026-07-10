@@ -6,6 +6,18 @@ add_executable(fif-host
   src/win32_socket.cpp
 )
 
+if(WIN32)
+  set(FIFSCREEN_FILE_DESCRIPTION "FifScreen Windows Host")
+  set(FIFSCREEN_INTERNAL_NAME "fif-host")
+  set(FIFSCREEN_ORIGINAL_FILENAME "fif-host.exe")
+  configure_file(
+    ${CMAKE_SOURCE_DIR}/packaging/windows/version.rc.in
+    ${CMAKE_CURRENT_BINARY_DIR}/fif-host-version.rc
+    @ONLY
+  )
+  target_sources(fif-host PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/fif-host-version.rc)
+endif()
+
 target_include_directories(fif-host PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
 )

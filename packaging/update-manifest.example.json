@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "product": "FifScreen",
+  "channel": "stable",
+  "version": "0.2.0",
+  "architecture": "x64",
+  "installerUrl": "https://updates.example.invalid/FifScreen-Setup-0.2.0-x64.exe",
+  "sha256": "REPLACE_WITH_64_HEX_CHARACTERS",
+  "releaseNotesUrl": "https://updates.example.invalid/FifScreen/0.2.0"
+}

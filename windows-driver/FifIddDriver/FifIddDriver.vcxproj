@@ -14,7 +14,13 @@
     <ClCompile Include="Driver.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <Inf Include="FifIddDriver.inf" />
+    <Inf Include="FifIddDriver.inf">
+      <SpecifyDriverVerDirectiveDate>false</SpecifyDriverVerDirectiveDate>
+      <SpecifyDriverVerDirectiveVersion>false</SpecifyDriverVerDirectiveVersion>
+    </Inf>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="FifIddDriver.rc" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{41AF1E3A-BAB4-4A68-A49E-1B790E28D5D4}</ProjectGuid>
