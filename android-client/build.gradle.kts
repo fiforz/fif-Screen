@@ -10,6 +10,10 @@ android {
     namespace = "com.fif.screen"
     compileSdk = 35
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     defaultConfig {
         applicationId = "com.fif.screen"
         minSdk = 26

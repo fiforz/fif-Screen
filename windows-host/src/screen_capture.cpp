@@ -258,18 +258,11 @@ std::optional<ScreenTarget> find_fifscreen_display() {
 }
 
 bool save_rgba_png(const std::wstring& path, const RawFrame& frame) {
-  if (frame.rgba.empty() || frame.width <= 0 || frame.height <= 0) {
+  if (!frame.bgra || frame.width <= 0 || frame.height <= 0 || frame.bgra_stride <= 0) {
     return false;
   }
 
   std::filesystem::create_directories(std::filesystem::path(path).parent_path());
-  std::vector<std::uint8_t> bgra(frame.rgba.size());
-  for (std::size_t i = 0; i + 3 < frame.rgba.size(); i += 4) {
-    bgra[i + 0] = frame.rgba[i + 2];
-    bgra[i + 1] = frame.rgba[i + 1];
-    bgra[i + 2] = frame.rgba[i + 0];
-    bgra[i + 3] = frame.rgba[i + 3];
-  }
 
   Gdiplus::GdiplusStartupInput startup_input;
   ULONG_PTR token = 0;
@@ -279,8 +272,8 @@ bool save_rgba_png(const std::wstring& path, const RawFrame& frame) {
 
   CLSID png_clsid{};
   const bool have_encoder = get_png_encoder_clsid(&png_clsid) >= 0;
-  Gdiplus::Bitmap bitmap(frame.width, frame.height, frame.width * 4,
-                         PixelFormat32bppARGB, bgra.data());
+  Gdiplus::Bitmap bitmap(frame.width, frame.height, frame.bgra_stride,
+                         PixelFormat32bppARGB, const_cast<BYTE*>(frame.bgra));
   const bool ok = have_encoder && bitmap.Save(path.c_str(), &png_clsid, nullptr) == Gdiplus::Ok;
   Gdiplus::GdiplusShutdown(token);
   return ok;
@@ -393,7 +386,7 @@ GdiScreenCapturer::~GdiScreenCapturer() {
   }
 }
 
-bool GdiScreenCapturer::capture(RawFrame& frame) const {
+bool GdiScreenCapturer::capture(RawFrame& frame, bool generate_rgb565) const {
   if (!screen_dc_ || !memory_dc_ || !bitmap_ || !bitmap_bits_ ||
       !old_bitmap_ || old_bitmap_ == HGDI_ERROR) {
     return false;
@@ -416,7 +409,13 @@ bool GdiScreenCapturer::capture(RawFrame& frame) const {
   draw_system_cursor(memory_dc_, target_, output_width_, output_height_);
   frame.width = output_width_;
   frame.height = output_height_;
-  frame.rgba.clear();
+  frame.bgra = static_cast<const std::uint8_t*>(bitmap_bits_);
+  frame.bgra_stride = output_width_ * 4;
+  if (!generate_rgb565) {
+    frame.rgb565.clear();
+    return true;
+  }
+
   const std::size_t pixel_count = static_cast<std::size_t>(output_width_) * output_height_;
   frame.rgb565.resize(pixel_count * 2);
   const auto* bgra = static_cast<const std::uint32_t*>(bitmap_bits_);

@@ -1,6 +1,7 @@
 package com.fif.screen.net
 
 import android.view.Surface
+import com.fif.screen.BuildConfig
 import com.fif.screen.diagnostics.FifLog
 import com.fif.screen.protocol.FifProtocol
 import com.fif.screen.video.DirtyRawSurfaceRenderer
@@ -80,7 +81,7 @@ class StreamClient(
 
     private fun sendHello(socket: Socket): Long {
         val payload = """
-            {"role":"android-client","protocol":1,"appVersion":"0.1.0","screen":{"width":1280,"height":720,"refreshHz":60},"decoders":[{"codec":"video/avc"}]}
+            {"role":"android-client","protocol":1,"appVersion":"${BuildConfig.VERSION_NAME}","screen":{"width":1280,"height":720,"refreshHz":60},"decoders":[{"codec":"video/avc","lowLatency":true}]}
         """.trimIndent().toByteArray(StandardCharsets.UTF_8)
         val timestampNs = System.nanoTime()
         FifProtocol.writePacket(socket.getOutputStream(), FifProtocol.TYPE_HELLO, 1, 0, payload)
@@ -201,7 +202,9 @@ class StreamClient(
                             "VIDEO_FRAMES_RECEIVED" to h264Stats.submittedFrames,
                             "DECODER_INPUT_FRAMES" to h264Stats.submittedFrames,
                             "DECODER_OUTPUT_FRAMES" to h264Stats.renderedFrames,
-                            "RENDERED_FRAMES" to h264Stats.renderedFrames
+                            "RENDERED_FRAMES" to h264Stats.renderedFrames,
+                            "DROPPED_FRAMES" to h264Stats.droppedFrames,
+                            "DECODE_LATENCY_MS" to h264Stats.lastDecodeLatencyMs.roundToInt()
                         )
                     }
                     else -> listener.onStats(

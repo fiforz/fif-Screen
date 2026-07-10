@@ -32,7 +32,8 @@ struct ScreenTarget {
 struct RawFrame {
   int width = 0;
   int height = 0;
-  std::vector<std::uint8_t> rgba;
+  const std::uint8_t* bgra = nullptr;
+  int bgra_stride = 0;
   std::vector<std::uint8_t> rgb565;
 };
 
@@ -70,7 +71,7 @@ class GdiScreenCapturer {
   [[nodiscard]] const ScreenTarget& target() const { return target_; }
   [[nodiscard]] int output_width() const { return output_width_; }
   [[nodiscard]] int output_height() const { return output_height_; }
-  bool capture(RawFrame& frame) const;
+  bool capture(RawFrame& frame, bool generate_rgb565 = true) const;
 
  private:
   ScreenTarget target_;
