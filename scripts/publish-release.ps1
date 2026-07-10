@@ -137,6 +137,7 @@ $tag = "v$Version"
 $hash = (Get-FileHash -LiteralPath $InstallerPath -Algorithm SHA256).Hash
 $hashPath = "$InstallerPath.sha256"
 "$hash  $([IO.Path]::GetFileName($InstallerPath))" | Set-Content -LiteralPath $hashPath -Encoding ASCII
+$releaseAssets = @($InstallerPath, $hashPath)
 
 $currentRepoVersion = (Get-Content -LiteralPath (Join-Path $RepoRoot 'VERSION') -Raw).Trim()
 if ($Version -eq $currentRepoVersion) {
@@ -155,6 +156,7 @@ if ($Version -eq $currentRepoVersion) {
         ([string]$latestManifest.sha256).ToUpperInvariant() -ne $hash) {
         throw '静态更新清单与当前安装包版本、文件名或 SHA-256 不一致。'
     }
+    $releaseAssets += $latestManifestPath
 }
 
 & git -C $RepoRoot push origin main
@@ -177,11 +179,11 @@ if ($LASTEXITCODE -ne 0) {
 if ($useGitHubCli) {
     & $gh.Source release view $tag --repo $Repository *> $null
     if ($LASTEXITCODE -eq 0) {
-        & $gh.Source release upload $tag $InstallerPath $hashPath --repo $Repository --clobber
+        $uploadArguments = @('release', 'upload', $tag) + $releaseAssets + `
+            @('--repo', $Repository, '--clobber')
+        & $gh.Source @uploadArguments
     } else {
-        $arguments = @(
-            'release', 'create', $tag,
-            $InstallerPath, $hashPath,
+        $arguments = @('release', 'create', $tag) + $releaseAssets + @(
             '--repo', $Repository,
             '--title', "FifScreen $Version",
             '--notes-file', $ReleaseNotesPath,
@@ -196,7 +198,7 @@ if ($useGitHubCli) {
         throw "发布 GitHub Release $tag 失败。"
     }
 } else {
-    Publish-WithGitHubApi -Tag $tag -AssetPaths @($InstallerPath, $hashPath) `
+    Publish-WithGitHubApi -Tag $tag -AssetPaths $releaseAssets `
         -NotesPath $ReleaseNotesPath -Headers $apiHeaders
 }
 

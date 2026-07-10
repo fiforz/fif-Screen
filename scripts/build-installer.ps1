@@ -27,7 +27,7 @@ $Version = (Get-Content -LiteralPath (Join-Path $RepoRoot 'VERSION') -Raw).Trim(
 $VersionCode = [int](Get-Content -LiteralPath (Join-Path $RepoRoot 'VERSION_CODE') -Raw).Trim()
 $UpdateChannel = if ($DriverFlavor -eq 'Production') { 'stable' } else { 'development' }
 if (-not $FallbackManifestUrl) {
-    $FallbackManifestUrl = "https://raw.githubusercontent.com/fiforz/fif-Screen/main/updates/latest-$UpdateChannel.json"
+    $FallbackManifestUrl = "https://github.com/fiforz/fif-Screen/releases/latest/download/latest-$UpdateChannel.json"
 }
 
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {

@@ -13,7 +13,7 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 
 $DefaultReleaseApiUrl = 'https://api.github.com/repos/fiforz/fif-Screen/releases/latest'
-$DefaultFallbackManifestUrl = 'https://raw.githubusercontent.com/fiforz/fif-Screen/main/updates/latest-development.json'
+$DefaultFallbackManifestUrl = 'https://github.com/fiforz/fif-Screen/releases/latest/download/latest-development.json'
 $UpdateLogDir = Join-Path $env:LOCALAPPDATA 'FifScreen\logs'
 $UpdateLogPath = Join-Path $UpdateLogDir 'update.log'
 New-Item -ItemType Directory -Force -Path $UpdateLogDir | Out-Null

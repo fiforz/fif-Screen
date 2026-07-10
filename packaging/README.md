@@ -39,7 +39,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1
 
 ## 更新与卸载约定
 
-已安装的控制中心启动后读取 `update.json`，优先通过 GitHub 最新 Release API 检查版本；API 超时时回退到仓库的 `updates/latest-<通道>.json` 静态清单。更新器验证产品版本、通道、x64 安装包名称、HTTPS 下载域、SHA-256，以及正式通道要求的 Authenticode 签名。
+已安装的控制中心启动后读取 `update.json`，优先通过 GitHub 最新 Release API 检查版本；API 超时时回退到最新 Release 资产中的 `latest-<通道>.json` 静态清单。更新器验证产品版本、通道、x64 安装包名称、HTTPS 下载域、SHA-256，以及正式通道要求的 Authenticode 签名。
 
 运行更新安装包之前，更新器会关闭 FifScreen 主机、设备启动器、控制中心和安装目录内的 ADB。安装程序还会再次执行同一关闭脚本，保证覆盖升级时文件没有被占用。
 

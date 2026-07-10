@@ -8,7 +8,7 @@
 
 - Windows 控制中心启动时检查管理员权限；
 - 非管理员启动时提示“请以管理员身份运行”，确认后立即退出；
-- GitHub Release API 不可用时回退到仓库静态更新清单。
+- GitHub Release API 不可用时回退到最新 Release 的静态更新清单资产。
 
 ### 修复
 
