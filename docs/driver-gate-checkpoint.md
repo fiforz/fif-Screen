@@ -188,8 +188,57 @@ docs/software-device-launcher-audit-v2.md
 docs/software-device-create.md
 ```
 
+## SOFTWARE DEVICE CREATE RUNTIME GATE
+
+Executed after Launcher V2 baseline commit:
+
+```text
+Precreate commit=0c23ea8b1eae76dfb5e35d33fc2eea370ddf71ae
+Command="D:\Documents\fif-Screen\build\stage-driver-gate-clean\windows-driver\FifIddDeviceLauncher\fif-idd-device-launcher.exe" create
+Start time=2026-07-08T14:29:46.8079723+08:00
+Owner PID=13844
+Owner running at end=YES
+Software device create executed=YES
+Software device create count=1
+Expected instance ID=SWD\FifScreenIdd\FifIddDriver
+Actual instance ID=SWD\FIFSCREENIDD\FIFIDDDRIVER
+Instance ID match=YES, case-insensitive
+Device present immediately=YES
+Device present after 5 seconds=YES
+Device present while owner running=YES
+Driver bound=NO
+Driver INF=
+Provider=
+Service=
+Driver version=
+DevNode status=0x1806400
+Problem code=28
+Problem name=CM_PROB_FAILED_INSTALL
+Device started=NO
+SetupAPI.dev.log delta bytes=0
+Kernel-PnP binding result=driver name null
+DeviceSetupManager warning=driver query/download/install delayed 50 seconds
+FifScreen display adapter appeared=NO
+Virtual monitor appeared=NO
+Virtual extended desktop verified=NO
+Software device remove executed=NO
+Owner terminate executed=NO
+Driver package stage executed=NO
+Device disable/enable/restart executed=NO
+Display mode change executed=NO
+BCD/certificate/reboot executed=NO
+RUNTIME_GATE=DRIVER_BINDING_FAILED
+```
+
+Detailed report:
+
+```text
+docs/software-device-create-runtime.md
+D:\Documents\fif-Screen\artifacts\software-device-create-v2
+```
+
 ## STOP STATE
 
 ```text
-READY_FOR_SOFTWARE_DEVICE_CREATE_GATE_V2
+DRIVER_BINDING_FAILED
 ```
