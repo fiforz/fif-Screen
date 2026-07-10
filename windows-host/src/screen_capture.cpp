@@ -243,12 +243,15 @@ std::optional<ScreenTarget> find_fifscreen_display() {
     return *fifscreen;
   }
 
-  auto secondary = std::find_if(active.begin(), active.end(), [](const ScreenTarget& target) {
-    return !target.primary;
-  });
-  if (secondary != active.end()) {
-    std::cout << "FifScreen display name not exposed; using first non-primary display\n";
-    return *secondary;
+  const char* fallback = std::getenv("FIF_ALLOW_SECONDARY_FALLBACK");
+  if (fallback && (std::string(fallback) == "1" || std::string(fallback) == "true")) {
+    auto secondary = std::find_if(active.begin(), active.end(), [](const ScreenTarget& target) {
+      return !target.primary;
+    });
+    if (secondary != active.end()) {
+      std::cout << "FifScreen display name not exposed; using first non-primary display\n";
+      return *secondary;
+    }
   }
 
   return std::nullopt;
