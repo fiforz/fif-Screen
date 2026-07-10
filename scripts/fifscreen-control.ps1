@@ -1,3 +1,8 @@
+param(
+    [ValidateSet('Gui', 'Start', 'Stop', 'Reconnect', 'Status')]
+    [string]$Action = 'Gui'
+)
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
@@ -10,13 +15,38 @@ $HostPath = Join-Path $RepoRoot 'build\host\windows-host\fif-host.exe'
 $LauncherPath = Join-Path $RepoRoot 'build\stage-driver-gate-clean\windows-driver\FifIddDeviceLauncher\fif-idd-device-launcher.exe'
 $ArtifactDir = Join-Path $RepoRoot 'artifacts\control-panel'
 New-Item -ItemType Directory -Force -Path $ArtifactDir | Out-Null
+$ControlLogPath = Join-Path $ArtifactDir 'control.log'
 
 function Add-Log {
     param([string]$Message)
     $time = Get-Date -Format 'HH:mm:ss'
-    $logBox.AppendText("[$time] $Message`r`n")
-    $logBox.SelectionStart = $logBox.TextLength
-    $logBox.ScrollToCaret()
+    $line = "[$time] $Message"
+    try {
+        Add-Content -LiteralPath $ControlLogPath -Value $line -Encoding UTF8
+    } catch {}
+
+    if ($null -ne $logBox -and -not $logBox.IsDisposed) {
+        $logBox.AppendText("$line`r`n")
+        $logBox.SelectionStart = $logBox.TextLength
+        $logBox.ScrollToCaret()
+    } else {
+        Write-Host $line
+    }
+}
+
+function ConvertTo-NativeArgument {
+    param([AllowEmptyString()][string]$Value)
+
+    if ($null -eq $Value -or $Value.Length -eq 0) {
+        return '""'
+    }
+    if ($Value -notmatch '[\s"]') {
+        return $Value
+    }
+
+    $escaped = $Value -replace '(\\*)"', '$1$1\"'
+    $escaped = $escaped -replace '(\\+)$', '$1$1'
+    return '"' + $escaped + '"'
 }
 
 function Invoke-Captured {
@@ -27,9 +57,9 @@ function Invoke-Captured {
     )
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = $FilePath
-    foreach ($arg in $Arguments) {
-        [void]$psi.ArgumentList.Add($arg)
-    }
+    $psi.Arguments = (($Arguments | ForEach-Object {
+        ConvertTo-NativeArgument -Value ([string]$_)
+    }) -join ' ')
     $psi.WorkingDirectory = $RepoRoot
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $true
@@ -49,6 +79,16 @@ function Invoke-Captured {
     }
 }
 
+function Invoke-UiAction {
+    param([scriptblock]$Action)
+
+    try {
+        & $Action
+    } catch {
+        Add-Log ("error: " + $_.Exception.Message)
+    }
+}
+
 function Get-AdbDevices {
     if (-not (Test-Path $AdbPath)) {
         return @()
@@ -61,7 +101,7 @@ function Get-AdbDevices {
 }
 
 function Get-AdbSerial {
-    $devices = Get-AdbDevices
+    $devices = @(Get-AdbDevices)
     if ($devices.Count -eq 0) {
         return $null
     }
@@ -131,14 +171,35 @@ function Ensure-SoftwareDevice {
     Add-Log 'creating extension display owner process'
     $out = Join-Path $ArtifactDir 'device-owner.out.log'
     $err = Join-Path $ArtifactDir 'device-owner.err.log'
-    Start-Process -FilePath $LauncherPath -ArgumentList 'create' -WorkingDirectory $RepoRoot `
+    $ownerProcess = Start-Process -FilePath $LauncherPath -ArgumentList 'create' -WorkingDirectory $RepoRoot `
         -RedirectStandardOutput $out -RedirectStandardError $err `
-        -WindowStyle Hidden | Out-Null
-    Start-Sleep -Seconds 2
+        -WindowStyle Hidden -PassThru
+
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        Start-Sleep -Milliseconds 500
+        $current = Get-LauncherStatus
+        if ($current.Owner -and $current.Device) {
+            Add-Log "extension display online: owner PID $($ownerProcess.Id)"
+            return
+        }
+        if ($ownerProcess.HasExited) {
+            break
+        }
+    }
+
+    $final = Get-LauncherStatus
+    $details = $final.Raw
+    if (Test-Path $err) {
+        $details = ($details + "`n" + (Get-Content -LiteralPath $err -Raw -ErrorAction SilentlyContinue)).Trim()
+    }
+    throw "extension display failed to start: $details"
 }
 
 function Configure-Android {
-    param([string]$Serial)
+    param(
+        [string]$Serial,
+        [bool]$InstallApk = $false
+    )
     if (-not $Serial) {
         Add-Log 'Android device not found; host will keep waiting'
         return
@@ -147,11 +208,18 @@ function Configure-Android {
     Invoke-Captured -FilePath $AdbPath -Arguments @('-s', $Serial, 'reverse', 'tcp:27183', 'tcp:27183') -TimeoutMs 10000 | Out-Null
     Invoke-Captured -FilePath $AdbPath -Arguments @('-s', $Serial, 'reverse', 'tcp:27184', 'tcp:27184') -TimeoutMs 10000 | Out-Null
 
-    if (Test-Path $ApkPath) {
-        Add-Log 'installing Android app'
-        $install = Invoke-Captured -FilePath $AdbPath -Arguments @('-s', $Serial, 'install', '-r', $ApkPath) -TimeoutMs 120000
-        if ($install.ExitCode -ne 0) {
-            Add-Log ("install failed: " + ($install.Output + $install.Error).Trim())
+    if ($InstallApk) {
+        $package = Invoke-Captured -FilePath $AdbPath `
+            -Arguments @('-s', $Serial, 'shell', 'pm', 'path', 'com.fif.screen') -TimeoutMs 10000
+        $packageInstalled = $package.ExitCode -eq 0 -and $package.Output -match 'package:'
+        if (-not $packageInstalled -and (Test-Path $ApkPath)) {
+            Add-Log 'installing Android app'
+            $install = Invoke-Captured -FilePath $AdbPath -Arguments @('-s', $Serial, 'install', '-r', $ApkPath) -TimeoutMs 120000
+            if ($install.ExitCode -ne 0) {
+                Add-Log ("install failed: " + ($install.Output + $install.Error).Trim())
+            }
+        } elseif ($packageInstalled) {
+            Add-Log 'Android app already installed'
         }
     }
 
@@ -166,7 +234,7 @@ function Start-FifScreen {
     Ensure-SoftwareDevice
     $serial = Get-AdbSerial
     Ensure-Host -Serial $serial
-    Configure-Android -Serial $serial
+    Configure-Android -Serial $serial -InstallApk $true
     Refresh-Status
 }
 
@@ -202,19 +270,31 @@ function Reconnect-Android {
 
 function Refresh-Status {
     $serial = Get-AdbSerial
-    $host = Get-Process fif-host -ErrorAction SilentlyContinue
+    $hostProcess = Get-Process fif-host -ErrorAction SilentlyContinue
     $launcher = Get-LauncherStatus
     $summary = @()
     $summary += if ($serial) { "Android: $serial" } else { 'Android: not connected' }
-    $summary += if ($host) { "Host: running PID $($host[0].Id)" } else { 'Host: stopped' }
+    $summary += if ($hostProcess) { "Host: running PID $($hostProcess[0].Id)" } else { 'Host: stopped' }
     $summary += if ($launcher.Owner) { 'Owner: running' } else { 'Owner: not running' }
     $summary += if ($launcher.Device) { 'Display node: present' } else { 'Display node: absent' }
-    $statusLabel.Text = ($summary -join '    ')
+    if ($null -ne $statusLabel -and -not $statusLabel.IsDisposed) {
+        $statusLabel.Text = ($summary -join '    ')
+    }
     Add-Log ($summary -join ' | ')
 }
 
+if ($Action -ne 'Gui') {
+    switch ($Action) {
+        'Start' { Start-FifScreen }
+        'Stop' { Stop-FifScreen }
+        'Reconnect' { Reconnect-Android }
+        'Status' { Refresh-Status }
+    }
+    exit 0
+}
+
 $form = [System.Windows.Forms.Form]::new()
-$form.Text = 'FifScreen Control'
+$form.Text = 'FifScreen Control - 1080p Ready'
 $form.Size = [System.Drawing.Size]::new(820, 520)
 $form.StartPosition = 'CenterScreen'
 
@@ -229,28 +309,28 @@ $startButton = [System.Windows.Forms.Button]::new()
 $startButton.Text = 'Start Display'
 $startButton.Location = [System.Drawing.Point]::new(16, 72)
 $startButton.Size = [System.Drawing.Size]::new(150, 42)
-$startButton.Add_Click({ Start-FifScreen })
+$startButton.Add_Click({ Invoke-UiAction -Action { Start-FifScreen } })
 $form.Controls.Add($startButton)
 
 $stopButton = [System.Windows.Forms.Button]::new()
 $stopButton.Text = 'Stop Display'
 $stopButton.Location = [System.Drawing.Point]::new(182, 72)
 $stopButton.Size = [System.Drawing.Size]::new(150, 42)
-$stopButton.Add_Click({ Stop-FifScreen })
+$stopButton.Add_Click({ Invoke-UiAction -Action { Stop-FifScreen } })
 $form.Controls.Add($stopButton)
 
 $reconnectButton = [System.Windows.Forms.Button]::new()
 $reconnectButton.Text = 'Reconnect Phone'
 $reconnectButton.Location = [System.Drawing.Point]::new(348, 72)
 $reconnectButton.Size = [System.Drawing.Size]::new(150, 42)
-$reconnectButton.Add_Click({ Reconnect-Android })
+$reconnectButton.Add_Click({ Invoke-UiAction -Action { Reconnect-Android } })
 $form.Controls.Add($reconnectButton)
 
 $statusButton = [System.Windows.Forms.Button]::new()
 $statusButton.Text = 'Refresh Status'
 $statusButton.Location = [System.Drawing.Point]::new(514, 72)
 $statusButton.Size = [System.Drawing.Size]::new(150, 42)
-$statusButton.Add_Click({ Refresh-Status })
+$statusButton.Add_Click({ Invoke-UiAction -Action { Refresh-Status } })
 $form.Controls.Add($statusButton)
 
 $logBox = [System.Windows.Forms.TextBox]::new()
@@ -262,5 +342,5 @@ $logBox.ReadOnly = $true
 $logBox.Font = [System.Drawing.Font]::new('Consolas', 9)
 $form.Controls.Add($logBox)
 
-$form.Add_Shown({ Refresh-Status })
+$form.Add_Shown({ Invoke-UiAction -Action { Refresh-Status } })
 [void]$form.ShowDialog()

@@ -62,6 +62,10 @@ class TestOverlayWindow {
 class GdiScreenCapturer {
  public:
   GdiScreenCapturer(ScreenTarget target, int output_width, int output_height);
+  ~GdiScreenCapturer();
+
+  GdiScreenCapturer(const GdiScreenCapturer&) = delete;
+  GdiScreenCapturer& operator=(const GdiScreenCapturer&) = delete;
 
   [[nodiscard]] const ScreenTarget& target() const { return target_; }
   [[nodiscard]] int output_width() const { return output_width_; }
@@ -72,6 +76,11 @@ class GdiScreenCapturer {
   ScreenTarget target_;
   int output_width_;
   int output_height_;
+  HDC screen_dc_ = nullptr;
+  HDC memory_dc_ = nullptr;
+  HBITMAP bitmap_ = nullptr;
+  HGDIOBJ old_bitmap_ = nullptr;
+  void* bitmap_bits_ = nullptr;
 };
 
 }  // namespace fif::host

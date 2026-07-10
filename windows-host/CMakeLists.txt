@@ -13,7 +13,7 @@ target_include_directories(fif-host PRIVATE
 target_link_libraries(fif-host PRIVATE fif_protocol)
 
 if(WIN32)
-  target_link_libraries(fif-host PRIVATE Ws2_32 User32 Gdi32 Gdiplus)
+  target_link_libraries(fif-host PRIVATE Ws2_32 User32 Gdi32 Gdiplus Winmm)
 else()
   message(FATAL_ERROR "windows-host currently targets Windows only")
 endif()

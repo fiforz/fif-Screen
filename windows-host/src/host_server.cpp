@@ -7,6 +7,8 @@
 
 #include <fif/protocol.hpp>
 
+#include <mmsystem.h>
+
 #include <atomic>
 #include <algorithm>
 #include <chrono>
@@ -22,8 +24,8 @@ namespace fif::host {
 namespace {
 
 struct VideoMode {
-  int width = 1600;
-  int height = 900;
+  int width = 1920;
+  int height = 1080;
   int fps = 60;
 };
 
@@ -35,6 +37,22 @@ struct DirtyPayload {
 
 constexpr int kDirtyTileSize = 64;
 constexpr std::uint16_t kDirtyFlagFullFrame = 1u << 0;
+
+class ScopedTimerResolution {
+ public:
+  ScopedTimerResolution() : active_(timeBeginPeriod(1) == TIMERR_NOERROR) {}
+  ~ScopedTimerResolution() {
+    if (active_) {
+      timeEndPeriod(1);
+    }
+  }
+
+  ScopedTimerResolution(const ScopedTimerResolution&) = delete;
+  ScopedTimerResolution& operator=(const ScopedTimerResolution&) = delete;
+
+ private:
+  bool active_ = false;
+};
 
 int env_int(const char* name, int fallback, int min_value, int max_value) {
   const char* raw = std::getenv(name);
@@ -129,14 +147,19 @@ void append_rgb565_tile(std::vector<std::uint8_t>& out,
   }
 }
 
-DirtyPayload build_dirty_rgb565_payload(const RawFrame& frame,
-                                        std::vector<std::uint8_t>& previous_rgb565) {
-  auto current_rgb565 = rgba_to_rgb565(frame);
-  const bool full_frame = previous_rgb565.size() != current_rgb565.size();
+DirtyPayload build_dirty_rgb565_payload(RawFrame& frame,
+                                         std::vector<std::uint8_t>& previous_rgb565) {
+  std::vector<std::uint8_t> converted_rgb565;
+  const std::vector<std::uint8_t>* current_rgb565 = &frame.rgb565;
+  if (current_rgb565->empty()) {
+    converted_rgb565 = rgba_to_rgb565(frame);
+    current_rgb565 = &converted_rgb565;
+  }
+  const bool full_frame = previous_rgb565.size() != current_rgb565->size();
 
   DirtyPayload payload;
   payload.full_frame = full_frame;
-  payload.bytes.reserve(full_frame ? current_rgb565.size() + 4096 : 256 * 1024);
+  payload.bytes.reserve(full_frame ? current_rgb565->size() + 4096 : 256 * 1024);
   payload.bytes.insert(payload.bytes.end(), {'F', 'D', 'R', '1'});
   append_u16_le(payload.bytes, static_cast<std::uint16_t>(kDirtyTileSize));
   append_u16_le(payload.bytes, full_frame ? kDirtyFlagFullFrame : 0);
@@ -148,7 +171,7 @@ DirtyPayload build_dirty_rgb565_payload(const RawFrame& frame,
     for (int x = 0; x < frame.width; x += kDirtyTileSize) {
       const int tile_width = std::min(kDirtyTileSize, frame.width - x);
       const bool changed = full_frame ||
-          rgb565_tile_changed(current_rgb565, previous_rgb565, frame.width,
+          rgb565_tile_changed(*current_rgb565, previous_rgb565, frame.width,
                               x, y, tile_width, tile_height);
       if (!changed) {
         continue;
@@ -158,7 +181,7 @@ DirtyPayload build_dirty_rgb565_payload(const RawFrame& frame,
       append_u16_le(payload.bytes, static_cast<std::uint16_t>(y));
       append_u16_le(payload.bytes, static_cast<std::uint16_t>(tile_width));
       append_u16_le(payload.bytes, static_cast<std::uint16_t>(tile_height));
-      append_rgb565_tile(payload.bytes, current_rgb565, frame.width, x, y, tile_width, tile_height);
+      append_rgb565_tile(payload.bytes, *current_rgb565, frame.width, x, y, tile_width, tile_height);
       ++payload.rect_count;
     }
   }
@@ -168,7 +191,11 @@ DirtyPayload build_dirty_rgb565_payload(const RawFrame& frame,
   payload.bytes[rect_count_offset + 2] = static_cast<std::uint8_t>((payload.rect_count >> 16u) & 0xffu);
   payload.bytes[rect_count_offset + 3] = static_cast<std::uint8_t>((payload.rect_count >> 24u) & 0xffu);
 
-  previous_rgb565 = std::move(current_rgb565);
+  if (!frame.rgb565.empty()) {
+    previous_rgb565.swap(frame.rgb565);
+  } else {
+    previous_rgb565 = std::move(converted_rgb565);
+  }
   return payload;
 }
 
@@ -200,6 +227,7 @@ std::string make_hello_ack_json(std::uint16_t control_port, std::uint16_t video_
 }  // namespace
 
 int HostServer::run() {
+  ScopedTimerResolution timer_resolution;
   WinsockRuntime winsock;
 
   if (config_.setup_adb_reverse) {
@@ -369,16 +397,27 @@ void HostServer::run_video_channel() {
     std::uint64_t last_frames_sent = 0;
     std::uint64_t last_bytes_sent = 0;
     std::vector<std::uint8_t> previous_rgb565;
+    std::chrono::nanoseconds capture_time{};
+    std::chrono::nanoseconds dirty_time{};
+    std::chrono::nanoseconds send_time{};
+    std::chrono::nanoseconds capture_time_max{};
+    std::chrono::nanoseconds dirty_time_max{};
+    std::chrono::nanoseconds send_time_max{};
     auto last_stats = std::chrono::steady_clock::now();
     const auto frame_interval = std::chrono::microseconds(1'000'000 / mode.fps);
+    auto next_frame_deadline = std::chrono::steady_clock::now();
 
     while (client.valid()) {
-      const auto frame_start = std::chrono::steady_clock::now();
+      const auto capture_start = std::chrono::steady_clock::now();
       if (!capturer.capture(frame)) {
         std::cerr << "capture failed; retrying\n";
         std::this_thread::sleep_for(frame_interval);
         continue;
       }
+      const auto capture_elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - capture_start);
+      capture_time += capture_elapsed;
+      capture_time_max = std::max(capture_time_max, capture_elapsed);
 
       if (save_capture_proof && !saved_capture_proof) {
         saved_capture_proof =
@@ -391,6 +430,7 @@ void HostServer::run_video_channel() {
       fif::PacketHeader frame_header;
       frame_header.type = fif::MessageType::VideoFrame;
       frame_header.sequence = sequence++;
+      const auto dirty_start = std::chrono::steady_clock::now();
       auto dirty = build_dirty_rgb565_payload(frame, previous_rgb565);
       if (dirty.full_frame) {
         frame_header.flags |= fif::kFlagIdrFrame;
@@ -398,10 +438,19 @@ void HostServer::run_video_channel() {
       }
       dirty_rects_sent += dirty.rect_count;
       const auto packet = fif::encode_packet(frame_header, dirty.bytes);
+      const auto dirty_elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - dirty_start);
+      dirty_time += dirty_elapsed;
+      dirty_time_max = std::max(dirty_time_max, dirty_elapsed);
+      const auto send_start = std::chrono::steady_clock::now();
       if (!client.send_all(packet)) {
         std::cout << "video client disconnected while sending frame\n";
         break;
       }
+      const auto send_elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - send_start);
+      send_time += send_elapsed;
+      send_time_max = std::max(send_time_max, send_elapsed);
       ++frames_sent;
       bytes_sent += packet.size();
 
@@ -409,6 +458,7 @@ void HostServer::run_video_channel() {
       if (now - last_stats >= std::chrono::seconds(1)) {
         const auto interval_frames = frames_sent - last_frames_sent;
         const auto interval_bytes = bytes_sent - last_bytes_sent;
+        const auto frame_divisor = std::max<std::uint64_t>(1, interval_frames);
         std::cout << "FIFSCREEN_HOST event=video_stats frames_sent=" << frames_sent
                   << " video_bytes_sent=" << bytes_sent
                   << " interval_fps=" << interval_frames
@@ -416,18 +466,42 @@ void HostServer::run_video_channel() {
                   << " dirty_rects_sent=" << dirty_rects_sent
                   << " full_frames_sent=" << full_frames_sent
                   << " output=" << mode.width << "x" << mode.height
-                  << " fps_target=" << mode.fps << "\n";
+                  << " fps_target=" << mode.fps
+                  << " capture_avg_us="
+                  << std::chrono::duration_cast<std::chrono::microseconds>(capture_time).count() /
+                         frame_divisor
+                  << " capture_max_us="
+                  << std::chrono::duration_cast<std::chrono::microseconds>(capture_time_max).count()
+                  << " dirty_avg_us="
+                  << std::chrono::duration_cast<std::chrono::microseconds>(dirty_time).count() /
+                         frame_divisor
+                  << " dirty_max_us="
+                  << std::chrono::duration_cast<std::chrono::microseconds>(dirty_time_max).count()
+                  << " send_avg_us="
+                  << std::chrono::duration_cast<std::chrono::microseconds>(send_time).count() /
+                         frame_divisor
+                  << " send_max_us="
+                  << std::chrono::duration_cast<std::chrono::microseconds>(send_time_max).count()
+                  << "\n";
         last_frames_sent = frames_sent;
         last_bytes_sent = bytes_sent;
         dirty_rects_sent = 0;
         full_frames_sent = 0;
+        capture_time = {};
+        dirty_time = {};
+        send_time = {};
+        capture_time_max = {};
+        dirty_time_max = {};
+        send_time_max = {};
         last_stats = now;
       }
 
-      const auto elapsed = std::chrono::steady_clock::now() - frame_start;
-      if (elapsed < frame_interval) {
-        std::this_thread::sleep_for(frame_interval - elapsed);
+      next_frame_deadline += frame_interval;
+      const auto pacing_now = std::chrono::steady_clock::now();
+      if (pacing_now < next_frame_deadline) {
+        std::this_thread::sleep_until(next_frame_deadline);
       } else {
+        next_frame_deadline = pacing_now;
         std::this_thread::yield();
       }
     }

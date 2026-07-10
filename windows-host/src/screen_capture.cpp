@@ -351,17 +351,15 @@ void TestOverlayWindow::run(ScreenTarget target) {
 }
 
 GdiScreenCapturer::GdiScreenCapturer(ScreenTarget target, int output_width, int output_height)
-    : target_(std::move(target)), output_width_(output_width), output_height_(output_height) {}
-
-bool GdiScreenCapturer::capture(RawFrame& frame) const {
-  HDC screen_dc = GetDC(nullptr);
-  if (!screen_dc) {
-    return false;
+    : target_(std::move(target)), output_width_(output_width), output_height_(output_height) {
+  screen_dc_ = GetDC(nullptr);
+  if (!screen_dc_) {
+    return;
   }
-  HDC memory_dc = CreateCompatibleDC(screen_dc);
-  if (!memory_dc) {
-    ReleaseDC(nullptr, screen_dc);
-    return false;
+
+  memory_dc_ = CreateCompatibleDC(screen_dc_);
+  if (!memory_dc_) {
+    return;
   }
 
   BITMAPINFO info{};
@@ -372,52 +370,65 @@ bool GdiScreenCapturer::capture(RawFrame& frame) const {
   info.bmiHeader.biBitCount = 32;
   info.bmiHeader.biCompression = BI_RGB;
 
-  void* bits = nullptr;
-  HBITMAP bitmap = CreateDIBSection(screen_dc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
-  if (!bitmap || !bits) {
-    DeleteDC(memory_dc);
-    ReleaseDC(nullptr, screen_dc);
+  bitmap_ = CreateDIBSection(screen_dc_, &info, DIB_RGB_COLORS,
+                             &bitmap_bits_, nullptr, 0);
+  if (!bitmap_ || !bitmap_bits_) {
+    return;
+  }
+  old_bitmap_ = SelectObject(memory_dc_, bitmap_);
+}
+
+GdiScreenCapturer::~GdiScreenCapturer() {
+  if (memory_dc_ && old_bitmap_ && old_bitmap_ != HGDI_ERROR) {
+    SelectObject(memory_dc_, old_bitmap_);
+  }
+  if (bitmap_) {
+    DeleteObject(bitmap_);
+  }
+  if (memory_dc_) {
+    DeleteDC(memory_dc_);
+  }
+  if (screen_dc_) {
+    ReleaseDC(nullptr, screen_dc_);
+  }
+}
+
+bool GdiScreenCapturer::capture(RawFrame& frame) const {
+  if (!screen_dc_ || !memory_dc_ || !bitmap_ || !bitmap_bits_ ||
+      !old_bitmap_ || old_bitmap_ == HGDI_ERROR) {
     return false;
   }
-
-  HGDIOBJ old_bitmap = SelectObject(memory_dc, bitmap);
   BOOL copied = FALSE;
   if (output_width_ == target_.width && output_height_ == target_.height) {
-    copied = BitBlt(memory_dc, 0, 0, output_width_, output_height_,
-                    screen_dc, target_.x, target_.y, SRCCOPY | CAPTUREBLT);
+    copied = BitBlt(memory_dc_, 0, 0, output_width_, output_height_,
+                    screen_dc_, target_.x, target_.y, SRCCOPY | CAPTUREBLT);
   } else {
-    SetStretchBltMode(memory_dc, COLORONCOLOR);
-    copied = StretchBlt(memory_dc, 0, 0, output_width_, output_height_,
-                        screen_dc, target_.x, target_.y, target_.width, target_.height,
+    SetStretchBltMode(memory_dc_, COLORONCOLOR);
+    copied = StretchBlt(memory_dc_, 0, 0, output_width_, output_height_,
+                        screen_dc_, target_.x, target_.y, target_.width, target_.height,
                         SRCCOPY | CAPTUREBLT);
   }
 
-  bool ok = false;
-  if (copied) {
-    draw_system_cursor(memory_dc, target_, output_width_, output_height_);
-
-    frame.width = output_width_;
-    frame.height = output_height_;
-    frame.rgba.clear();
-    frame.rgb565.resize(static_cast<std::size_t>(output_width_) * output_height_ * 2);
-    const auto* bgra = static_cast<const std::uint8_t*>(bits);
-    std::size_t dst = 0;
-    for (std::size_t src = 0; src + 3 < static_cast<std::size_t>(output_width_) * output_height_ * 4; src += 4) {
-      const std::uint16_t r = bgra[src + 2] >> 3;
-      const std::uint16_t g = bgra[src + 1] >> 2;
-      const std::uint16_t b = bgra[src + 0] >> 3;
-      const std::uint16_t pixel = static_cast<std::uint16_t>((r << 11) | (g << 5) | b);
-      frame.rgb565[dst++] = static_cast<std::uint8_t>(pixel & 0xffu);
-      frame.rgb565[dst++] = static_cast<std::uint8_t>((pixel >> 8u) & 0xffu);
-    }
-    ok = true;
+  if (!copied) {
+    return false;
   }
 
-  SelectObject(memory_dc, old_bitmap);
-  DeleteObject(bitmap);
-  DeleteDC(memory_dc);
-  ReleaseDC(nullptr, screen_dc);
-  return ok;
+  draw_system_cursor(memory_dc_, target_, output_width_, output_height_);
+  frame.width = output_width_;
+  frame.height = output_height_;
+  frame.rgba.clear();
+  const std::size_t pixel_count = static_cast<std::size_t>(output_width_) * output_height_;
+  frame.rgb565.resize(pixel_count * 2);
+  const auto* bgra = static_cast<const std::uint32_t*>(bitmap_bits_);
+  auto* rgb565 = reinterpret_cast<std::uint16_t*>(frame.rgb565.data());
+  for (std::size_t i = 0; i < pixel_count; ++i) {
+    const std::uint32_t pixel = bgra[i];
+    rgb565[i] = static_cast<std::uint16_t>(
+        ((pixel >> 8u) & 0xf800u) |
+        ((pixel >> 5u) & 0x07e0u) |
+        ((pixel >> 3u) & 0x001fu));
+  }
+  return true;
 }
 
 }  // namespace fif::host

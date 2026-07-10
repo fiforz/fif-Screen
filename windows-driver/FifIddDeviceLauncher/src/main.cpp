@@ -296,7 +296,7 @@ void write_owner_state(HANDLE mapping, const std::wstring& instance_id) {
 bool wait_for_no_fifscreen_devices(DWORD timeout_ms) {
   const DWORD start = GetTickCount();
   for (;;) {
-    if (find_devices(false).empty()) {
+    if (find_devices(true).empty()) {
       return true;
     }
 
@@ -311,7 +311,7 @@ bool wait_for_owner_stopped_and_device_absent(DWORD timeout_ms) {
   const DWORD start = GetTickCount();
   for (;;) {
     const OwnerProbe owner = probe_owner();
-    const bool device_present = !find_devices(false).empty();
+    const bool device_present = !find_devices(true).empty();
     if (!owner.owner_running && !device_present) {
       return true;
     }
@@ -387,7 +387,7 @@ BOOL WINAPI console_ctrl_handler(DWORD control_type) {
 
 int command_create() {
   const OwnerProbe existing_owner = probe_owner();
-  const bool existing_device = !find_devices(false).empty();
+  const bool existing_device = !find_devices(true).empty();
   CreateDecision decision = decide_create(existing_owner.owner_running, existing_device);
 
   if (decision == CreateDecision::OrphanOrTransitionalDeviceState) {
@@ -511,7 +511,8 @@ int command_create() {
 }
 
 int command_status() {
-  const auto devices = find_devices(false);
+  const auto devices = find_devices(true);
+  const auto recorded_devices = find_devices(false);
   const OwnerProbe owner = probe_owner();
   const SharedOwnerState owner_state = read_owner_state();
   std::wcout << L"owner_running=" << (owner.owner_running ? L"true" : L"false") << L"\n";
@@ -521,17 +522,23 @@ int command_status() {
     std::wcout << L"owner_pid=NOT_AVAILABLE\n";
   }
 
+  std::wcout << L"fifscreen_software_device_present="
+             << (devices.empty() ? L"false" : L"true") << L"\n";
+  std::wcout << L"fifscreen_software_device_recorded="
+             << (recorded_devices.empty() ? L"false" : L"true") << L"\n";
+
   if (devices.empty()) {
-    std::wcout << L"fifscreen_software_device_present=false\n";
     if (owner_state.instance_id[0] != L'\0') {
       std::wcout << L"actual_instance_id=" << owner_state.instance_id << L"\n";
     } else {
       std::wcout << L"actual_instance_id=NOT_CREATED\n";
     }
+    for (const auto& device : recorded_devices) {
+      std::wcout << L"recorded_instance_id=" << device.instance_id << L"\n";
+    }
     return 0;
   }
 
-  std::wcout << L"fifscreen_software_device_present=true\n";
   for (const auto& device : devices) {
     std::wcout << L"instance_id=" << device.instance_id << L"\n";
     std::wcout << L"actual_instance_id=" << device.instance_id << L"\n";
@@ -563,7 +570,7 @@ int command_status() {
 
 int command_remove() {
   const OwnerProbe owner = probe_owner();
-  const bool device_present = !find_devices(false).empty();
+  const bool device_present = !find_devices(true).empty();
 
   if (!owner.owner_running) {
     if (device_present) {
