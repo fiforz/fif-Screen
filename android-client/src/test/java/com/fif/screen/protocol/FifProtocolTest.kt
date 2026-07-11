@@ -147,6 +147,65 @@ class FifProtocolTest {
         }
     }
 
+    @Test
+    fun lanDiscoveryRoundTrips() {
+        val nonce = 0x78563412
+        val request = ByteBuffer.wrap(FifProtocol.encodeDiscoveryRequest(nonce))
+            .order(ByteOrder.LITTLE_ENDIAN)
+        assertArrayEquals("FIFDISC1".toByteArray(), ByteArray(8).also(request::get))
+        assertEquals(FifProtocol.VERSION.toInt(), request.short.toInt())
+        assertEquals(0, request.short.toInt())
+        assertEquals(0, request.short.toInt())
+        assertEquals(0, request.short.toInt())
+        assertEquals(nonce, request.int)
+
+        val responsePayload = ByteBuffer.allocate(FifProtocol.DISCOVERY_PACKET_SIZE)
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .put("FIFHERE1".toByteArray())
+            .putShort(FifProtocol.VERSION)
+            .putShort(0.toShort())
+            .putShort(27183.toShort())
+            .putShort(27184.toShort())
+            .putInt(nonce)
+            .array()
+        val response = FifProtocol.decodeDiscoveryResponse(responsePayload)
+        assertEquals(27183, response.controlPort)
+        assertEquals(27184, response.videoPort)
+        assertEquals(nonce, response.requestNonce)
+    }
+
+    @Test
+    fun pairingPayloadsRoundTrip() {
+        val challenge = FifProtocol.PairChallenge(
+            iterations = 100_000,
+            salt = ByteArray(16) { it.toByte() },
+            serverNonce = ByteArray(32) { (0x10 + it).toByte() }
+        )
+        val challengePayload = ByteBuffer.allocate(FifProtocol.PAIR_CHALLENGE_PAYLOAD_SIZE)
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .put(FifProtocol.PAIRING_PAYLOAD_VERSION.toByte())
+            .put(byteArrayOf(0, 0, 0))
+            .putInt(challenge.iterations)
+            .put(challenge.salt)
+            .put(challenge.serverNonce)
+            .array()
+        val decodedChallenge = FifProtocol.decodePairChallenge(challengePayload)
+        assertEquals(challenge.iterations, decodedChallenge.iterations)
+        assertArrayEquals(challenge.salt, decodedChallenge.salt)
+        assertArrayEquals(challenge.serverNonce, decodedChallenge.serverNonce)
+
+        val result = FifProtocol.PairResult(true, ByteArray(32) { 0xa5.toByte() })
+        val resultPayload = ByteBuffer.allocate(FifProtocol.PAIR_RESULT_PAYLOAD_SIZE)
+            .put(FifProtocol.PAIRING_PAYLOAD_VERSION.toByte())
+            .put(1.toByte())
+            .put(byteArrayOf(0, 0))
+            .put(result.hostProof)
+            .array()
+        val decodedResult = FifProtocol.decodePairResult(resultPayload)
+        assertEquals(true, decodedResult.accepted)
+        assertArrayEquals(result.hostProof, decodedResult.hostProof)
+    }
+
     private fun readVector(file: String, maxPayload: Int = FifProtocol.MAX_CONTROL_PAYLOAD): FifProtocol.Packet =
         FifProtocol.readPacket(ByteArrayInputStream(vectorBytes(file)), maxPayload)
 

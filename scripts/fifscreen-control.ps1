@@ -1,6 +1,11 @@
 ﻿param(
     [ValidateSet('Gui', 'Start', 'Stop', 'Reconnect', 'Status', 'CheckUpdate')]
-    [string]$Action = 'Gui'
+    [string]$Action = 'Gui',
+
+    [ValidateSet('Usb', 'Lan')]
+    [string]$ConnectionMode = 'Usb',
+
+    [string]$PairingPin = ''
 )
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -242,25 +247,35 @@ function Show-UsageTutorial {
 • 三星：设置 → 关于手机 → 软件信息 → 连续点击编译编号；然后返回设置底部进入“开发者选项”。
 • 其他设备：在设置中搜索“版本号”“编译编号”或“开发者选项”。
 
-二、开启 USB 调试
+二、使用 USB 调试连接
 
 1. 进入“开发者选项”。
 2. 打开“USB 调试”。部分系统还需要打开“仅充电模式下允许 ADB 调试”或“USB 调试（安全设置）”。
 3. 使用支持数据传输的 USB 线连接电脑；仅能充电的线无法使用。
 4. 手机弹出“是否允许 USB 调试”时，勾选“始终允许使用这台计算机进行调试”，再点击“允许”。
 
-三、启动 FifScreen
+三、使用无线局域网连接
 
-1. 保持手机解锁并连接电脑。
-2. 在 FifScreen 控制中心点击“启动扩展屏”。程序会配置 USB 通道、安装或更新手机端 APK，并启动扩展显示。
+1. 先通过 USB 安装一次 FifScreen Android 应用；之后无线使用时不需要连接数据线。
+2. 确保电脑与 Android 设备连接到同一个可信局域网，并关闭会隔离局域网设备的访客 Wi-Fi。
+3. 在 Windows 控制中心选择“无线局域网”，输入任意四位数字 PIN，再点击“启动扩展屏”。
+4. 在 Android 应用中打开连接设置，选择“无线局域网”，输入与电脑相同的四位 PIN。
+5. Android 应用会自动发现局域网内的 FifScreen 主机并完成握手。PIN 不会通过局域网广播，也不会保存到磁盘。
+
+四、启动与切换 FifScreen
+
+1. 选择“USB 调试”时，保持手机解锁并连接电脑。
+2. 点击“启动扩展屏”。USB 模式会配置 USB 通道、安装或更新手机端 APK，并启动扩展显示；无线模式会等待同一局域网内的 Android 应用连接。
 3. Windows 的“设置 → 系统 → 显示”中可以调整扩展屏的位置、方向和缩放比例。
-4. USB 重新插拔后，点击“重新连接手机”。
+4. USB 重新插拔或更改无线 PIN 后，点击“重新连接手机”。
 5. 不再使用时点击“停止扩展屏”。
+6. Android 应用中按系统返回键可重新打开连接方式与 PIN 设置。
 
-四、常见问题
+五、常见问题
 
 • 显示“未连接”：确认 USB 调试授权没有被拒绝，更换数据线或 USB 接口后重新连接。
 • 手机只充电：从 USB 用途通知中选择“文件传输”，再重新授权 USB 调试。
+• 无线模式找不到电脑：确认两台设备在同一局域网、PIN 完全一致，并检查路由器是否启用了 AP/客户端隔离。
 • 画面卡顿：关闭手机省电模式，避免通过 USB 集线器连接，并保持电脑显卡驱动为较新版本。
 • 更换手机：新设备必须重新完成一次 USB 调试授权，然后点击“重新连接手机”。
 "@
@@ -352,8 +367,63 @@ function Get-LauncherStatus {
     }
 }
 
+function Get-RequestedConnectionSettings {
+    $mode = $ConnectionMode
+    $pin = $PairingPin
+    if ($Action -eq 'Gui') {
+        $mode = if ($lanModeRadio.Checked) { 'Lan' } else { 'Usb' }
+        $pin = [string]$pinInput.Text
+    }
+    $pin = $pin.Trim()
+    if ($mode -eq 'Lan' -and $pin -notmatch '^[0-9]{4}$') {
+        throw '无线局域网连接需要输入四位数字 PIN。'
+    }
+    return [pscustomobject]@{ Mode = $mode; Pin = $pin }
+}
+
+function Get-HostConnectionMode {
+    param([System.Diagnostics.Process]$Process)
+    try {
+        $commandLine = (Get-CimInstance Win32_Process -Filter "ProcessId=$($Process.Id)" -ErrorAction Stop).CommandLine
+        if ($commandLine -match '(?i)--transport\s+lan') {
+            return 'Lan'
+        }
+    } catch {}
+    return 'Usb'
+}
+
+function Ensure-LanFirewallRules {
+    $rules = @(
+        @{ Name = 'FifScreen-LAN-Discovery'; DisplayName = 'FifScreen 局域网发现'; Protocol = 'UDP'; Port = '27182' },
+        @{ Name = 'FifScreen-LAN-Transport'; DisplayName = 'FifScreen 局域网传输'; Protocol = 'TCP'; Port = '27183-27184' }
+    )
+    foreach ($rule in $rules) {
+        Get-NetFirewallRule -Name $rule.Name -ErrorAction SilentlyContinue |
+            Remove-NetFirewallRule -ErrorAction SilentlyContinue
+        New-NetFirewallRule `
+            -Name $rule.Name `
+            -DisplayName $rule.DisplayName `
+            -Group 'FifScreen' `
+            -Direction Inbound `
+            -Action Allow `
+            -Enabled True `
+            -Profile Any `
+            -Protocol $rule.Protocol `
+            -LocalPort $rule.Port `
+            -RemoteAddress LocalSubnet `
+            -Program $HostPath `
+            -EdgeTraversalPolicy Block `
+            -ErrorAction Stop | Out-Null
+    }
+    Add-Log '局域网防火墙规则已启用，仅允许本地子网访问'
+}
+
 function Ensure-Host {
-    param([string]$Serial)
+    param(
+        [string]$Serial,
+        [ValidateSet('Usb', 'Lan')][string]$Mode,
+        [string]$Pin
+    )
     $existing = @(Get-Process fif-host -ErrorAction SilentlyContinue)
     if ($existing) {
         $matching = @($existing | Where-Object {
@@ -363,11 +433,20 @@ function Ensure-Host {
                 $false
             }
         })
-        if ($matching) {
-            Add-Log "Windows 主机服务已运行：PID $($matching[0].Id) | 版本 $AppVersion"
+        $modeMatching = @($matching | Where-Object {
+            (Get-HostConnectionMode -Process $_) -eq $Mode
+        })
+        if ($modeMatching -and $Mode -eq 'Usb') {
+            Add-Log "Windows 主机服务已运行：PID $($modeMatching[0].Id) | 版本 $AppVersion | USB"
             return
         }
-        Add-Log '检测到旧版 Windows 主机，正在仅重启主机服务'
+        if ($modeMatching -and $Mode -eq 'Lan') {
+            Add-Log '正在重启无线主机以应用本次 PIN'
+        } elseif ($matching) {
+            Add-Log "正在切换 Windows 主机连接方式：$Mode"
+        } else {
+            Add-Log '检测到旧版 Windows 主机，正在仅重启主机服务'
+        }
         $existing | Stop-Process -Force
         for ($attempt = 0; $attempt -lt 20; $attempt++) {
             if (-not (Get-Process fif-host -ErrorAction SilentlyContinue)) {
@@ -386,10 +465,21 @@ function Ensure-Host {
         return
     }
 
-    $env:FIF_ADB = $AdbPath
-    if ($Serial) {
-        $env:FIF_ADB_SERIAL = $Serial
+    if ($Mode -eq 'Lan') {
+        Ensure-LanFirewallRules
     }
+
+    if ($Mode -eq 'Usb') {
+        $env:FIF_ADB = $AdbPath
+    } else {
+        Remove-Item Env:FIF_ADB -ErrorAction SilentlyContinue
+    }
+    if ($Mode -eq 'Usb' -and $Serial) {
+        $env:FIF_ADB_SERIAL = $Serial
+    } else {
+        Remove-Item Env:FIF_ADB_SERIAL -ErrorAction SilentlyContinue
+    }
+    $env:FIF_PAIRING_PIN = if ($Mode -eq 'Lan') { $Pin } else { '' }
     Remove-Item Env:FIF_SHOW_TEST_OVERLAY -ErrorAction SilentlyContinue
     Remove-Item Env:FIF_SAVE_CAPTURE_PROOF -ErrorAction SilentlyContinue
     Remove-Item Env:FIF_VIDEO_WIDTH -ErrorAction SilentlyContinue
@@ -398,11 +488,23 @@ function Ensure-Host {
 
     $out = Join-Path $ArtifactDir 'fif-host.out.log'
     $err = Join-Path $ArtifactDir 'fif-host.err.log'
-    $process = Start-Process -FilePath $HostPath -WorkingDirectory $RepoRoot `
-        -RedirectStandardOutput $out -RedirectStandardError $err `
-        -WindowStyle Hidden -PassThru
+    try {
+        $process = Start-Process -FilePath $HostPath `
+            -ArgumentList @('--transport', $Mode.ToLowerInvariant()) `
+            -WorkingDirectory $RepoRoot `
+            -RedirectStandardOutput $out -RedirectStandardError $err `
+            -WindowStyle Hidden -PassThru
+    } finally {
+        Remove-Item Env:FIF_PAIRING_PIN -ErrorAction SilentlyContinue
+    }
     Start-Sleep -Milliseconds 700
-    Add-Log "Windows 主机服务已启动：PID $($process.Id)"
+    if ($process.HasExited) {
+        $details = if (Test-Path -LiteralPath $err) {
+            (Get-Content -LiteralPath $err -Raw -ErrorAction SilentlyContinue).Trim()
+        } else { '' }
+        throw "Windows 主机服务启动失败：$details"
+    }
+    Add-Log "Windows 主机服务已启动：PID $($process.Id) | 连接方式 $Mode"
 }
 
 function Ensure-SoftwareDevice {
@@ -450,15 +552,25 @@ function Ensure-SoftwareDevice {
 function Configure-Android {
     param(
         [string]$Serial,
-        [bool]$InstallApk = $false
+        [bool]$InstallApk = $false,
+        [ValidateSet('Usb', 'Lan')][string]$Mode = 'Usb'
     )
     if (-not $Serial) {
-        Add-Log '未发现 Android 设备，Windows 主机服务将继续等待'
+        if ($Mode -eq 'Lan') {
+            Add-Log '无线主机已就绪；请在同一局域网的 Android 应用中选择无线连接并输入相同 PIN'
+        } else {
+            Add-Log '未发现已授权 USB 调试的 Android 设备，Windows 主机服务将继续等待'
+        }
         return
     }
     Add-Log "Android 设备：$Serial"
-    Invoke-Captured -FilePath $AdbPath -Arguments @('-s', $Serial, 'reverse', 'tcp:27183', 'tcp:27183') -TimeoutMs 10000 | Out-Null
-    Invoke-Captured -FilePath $AdbPath -Arguments @('-s', $Serial, 'reverse', 'tcp:27184', 'tcp:27184') -TimeoutMs 10000 | Out-Null
+    if ($Mode -eq 'Usb') {
+        Invoke-Captured -FilePath $AdbPath -Arguments @('-s', $Serial, 'reverse', 'tcp:27183', 'tcp:27183') -TimeoutMs 10000 | Out-Null
+        Invoke-Captured -FilePath $AdbPath -Arguments @('-s', $Serial, 'reverse', 'tcp:27184', 'tcp:27184') -TimeoutMs 10000 | Out-Null
+        Add-Log 'USB 调试通道已配置'
+    } else {
+        Add-Log '无线模式不会使用 ADB reverse；USB 仅用于安装或启动 Android 应用'
+    }
 
     if ($InstallApk) {
         if (-not (Test-Path -LiteralPath $ApkPath)) {
@@ -514,11 +626,12 @@ function Configure-Android {
 }
 
 function Start-FifScreen {
-    Add-Log '正在启动扩展屏'
+    $settings = Get-RequestedConnectionSettings
+    Add-Log "正在启动扩展屏：连接方式 $($settings.Mode)"
     Ensure-SoftwareDevice
     $serial = Get-AdbSerial
-    Ensure-Host -Serial $serial
-    Configure-Android -Serial $serial -InstallApk $true
+    Ensure-Host -Serial $serial -Mode $settings.Mode -Pin $settings.Pin
+    Configure-Android -Serial $serial -InstallApk $true -Mode $settings.Mode
     Refresh-Status
 }
 
@@ -545,10 +658,11 @@ function Stop-FifScreen {
 }
 
 function Reconnect-Android {
-    Add-Log '正在重新连接 Android 设备'
+    $settings = Get-RequestedConnectionSettings
+    Add-Log "正在重新连接 Android 设备：连接方式 $($settings.Mode)"
     $serial = Get-AdbSerial
-    Ensure-Host -Serial $serial
-    Configure-Android -Serial $serial
+    Ensure-Host -Serial $serial -Mode $settings.Mode -Pin $settings.Pin
+    Configure-Android -Serial $serial -Mode $settings.Mode
     Refresh-Status
 }
 
@@ -557,8 +671,11 @@ function Refresh-Status {
     $hostProcess = Get-Process fif-host -ErrorAction SilentlyContinue
     $launcher = Get-LauncherStatus
     $summary = @()
-    $summary += if ($serial) { "Android：$serial" } else { 'Android：未连接' }
-    $summary += if ($hostProcess) { "主机服务：运行中 PID $($hostProcess[0].Id)" } else { '主机服务：已停止' }
+    $summary += if ($serial) { "ADB：$serial" } else { 'ADB：未连接（无线模式无需 ADB）' }
+    $summary += if ($hostProcess) {
+        $hostMode = Get-HostConnectionMode -Process $hostProcess[0]
+        "主机服务：运行中 PID $($hostProcess[0].Id) / $hostMode"
+    } else { '主机服务：已停止' }
     $summary += if ($launcher.Owner) { '设备所有者：运行中' } else { '设备所有者：未运行' }
     $summary += if ($launcher.Device) { '扩展显示：已存在' } else { '扩展显示：不存在' }
     if ($null -ne $statusLabel -and -not $statusLabel.IsDisposed) {
@@ -580,7 +697,8 @@ if ($Action -ne 'Gui') {
 
 $form = [System.Windows.Forms.Form]::new()
 $form.Text = "FifScreen 控制中心 $AppVersion - 1080p"
-$form.Size = [System.Drawing.Size]::new(860, 560)
+$form.Size = [System.Drawing.Size]::new(860, 650)
+$form.MinimumSize = [System.Drawing.Size]::new(860, 610)
 $form.StartPosition = 'CenterScreen'
 $form.Font = [System.Drawing.Font]::new('Microsoft YaHei UI', 9)
 
@@ -604,40 +722,92 @@ $statusLabel = [System.Windows.Forms.Label]::new()
 $statusLabel.AutoSize = $false
 $statusLabel.Location = [System.Drawing.Point]::new(16, 36)
 $statusLabel.Size = [System.Drawing.Size]::new(810, 44)
+$statusLabel.Anchor = 'Top, Left, Right'
 $statusLabel.Text = '状态：正在读取'
 $form.Controls.Add($statusLabel)
 
+$connectionGroup = [System.Windows.Forms.GroupBox]::new()
+$connectionGroup.Text = '连接方式'
+$connectionGroup.Location = [System.Drawing.Point]::new(16, 80)
+$connectionGroup.Size = [System.Drawing.Size]::new(810, 78)
+$connectionGroup.Anchor = 'Top, Left, Right'
+$form.Controls.Add($connectionGroup)
+
+$usbModeRadio = [System.Windows.Forms.RadioButton]::new()
+$usbModeRadio.Text = 'USB 调试'
+$usbModeRadio.Location = [System.Drawing.Point]::new(20, 31)
+$usbModeRadio.Size = [System.Drawing.Size]::new(120, 28)
+$usbModeRadio.Checked = $ConnectionMode -eq 'Usb'
+$connectionGroup.Controls.Add($usbModeRadio)
+
+$lanModeRadio = [System.Windows.Forms.RadioButton]::new()
+$lanModeRadio.Text = '无线局域网'
+$lanModeRadio.Location = [System.Drawing.Point]::new(158, 31)
+$lanModeRadio.Size = [System.Drawing.Size]::new(132, 28)
+$lanModeRadio.Checked = $ConnectionMode -eq 'Lan'
+$connectionGroup.Controls.Add($lanModeRadio)
+
+$pinLabel = [System.Windows.Forms.Label]::new()
+$pinLabel.Text = '四位 PIN：'
+$pinLabel.Location = [System.Drawing.Point]::new(322, 35)
+$pinLabel.AutoSize = $true
+$connectionGroup.Controls.Add($pinLabel)
+
+$pinInput = [System.Windows.Forms.MaskedTextBox]::new()
+$pinInput.Mask = '0000'
+$pinInput.PasswordChar = '*'
+$pinInput.AsciiOnly = $true
+$pinInput.TextMaskFormat = [System.Windows.Forms.MaskFormat]::ExcludePromptAndLiterals
+$pinInput.Text = $PairingPin
+$pinInput.Location = [System.Drawing.Point]::new(404, 31)
+$pinInput.Size = [System.Drawing.Size]::new(84, 28)
+$pinInput.Enabled = $lanModeRadio.Checked
+$connectionGroup.Controls.Add($pinInput)
+
+$lanHint = [System.Windows.Forms.Label]::new()
+$lanHint.Text = '电脑与 Android 设备需处于同一局域网'
+$lanHint.Location = [System.Drawing.Point]::new(512, 35)
+$lanHint.AutoSize = $true
+$connectionGroup.Controls.Add($lanHint)
+
+$usbModeRadio.Add_CheckedChanged({ $pinInput.Enabled = $lanModeRadio.Checked })
+$lanModeRadio.Add_CheckedChanged({
+    $pinInput.Enabled = $lanModeRadio.Checked
+    if ($lanModeRadio.Checked) { $pinInput.Focus() }
+})
+
 $startButton = [System.Windows.Forms.Button]::new()
 $startButton.Text = '启动扩展屏'
-$startButton.Location = [System.Drawing.Point]::new(16, 88)
+$startButton.Location = [System.Drawing.Point]::new(16, 174)
 $startButton.Size = [System.Drawing.Size]::new(150, 42)
 $startButton.Add_Click({ Invoke-UiAction -Action { Start-FifScreen } })
 $form.Controls.Add($startButton)
 
 $stopButton = [System.Windows.Forms.Button]::new()
 $stopButton.Text = '停止扩展屏'
-$stopButton.Location = [System.Drawing.Point]::new(182, 88)
+$stopButton.Location = [System.Drawing.Point]::new(182, 174)
 $stopButton.Size = [System.Drawing.Size]::new(150, 42)
 $stopButton.Add_Click({ Invoke-UiAction -Action { Stop-FifScreen } })
 $form.Controls.Add($stopButton)
 
 $reconnectButton = [System.Windows.Forms.Button]::new()
 $reconnectButton.Text = '重新连接手机'
-$reconnectButton.Location = [System.Drawing.Point]::new(348, 88)
+$reconnectButton.Location = [System.Drawing.Point]::new(348, 174)
 $reconnectButton.Size = [System.Drawing.Size]::new(150, 42)
 $reconnectButton.Add_Click({ Invoke-UiAction -Action { Reconnect-Android } })
 $form.Controls.Add($reconnectButton)
 
 $statusButton = [System.Windows.Forms.Button]::new()
 $statusButton.Text = '刷新状态'
-$statusButton.Location = [System.Drawing.Point]::new(514, 88)
+$statusButton.Location = [System.Drawing.Point]::new(514, 174)
 $statusButton.Size = [System.Drawing.Size]::new(150, 42)
 $statusButton.Add_Click({ Invoke-UiAction -Action { Refresh-Status } })
 $form.Controls.Add($statusButton)
 
 $logBox = [System.Windows.Forms.TextBox]::new()
-$logBox.Location = [System.Drawing.Point]::new(16, 146)
+$logBox.Location = [System.Drawing.Point]::new(16, 232)
 $logBox.Size = [System.Drawing.Size]::new(810, 360)
+$logBox.Anchor = 'Top, Bottom, Left, Right'
 $logBox.Multiline = $true
 $logBox.ScrollBars = 'Vertical'
 $logBox.ReadOnly = $true

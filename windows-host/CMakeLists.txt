@@ -3,6 +3,7 @@ add_executable(fif-host
   src/host_server.cpp
   src/main.cpp
   src/mf_h264_encoder.cpp
+  src/pairing_crypto.cpp
   src/screen_capture.cpp
   src/touch_injector.cpp
   src/win32_socket.cpp
@@ -29,7 +30,7 @@ target_link_libraries(fif-host PRIVATE fif_protocol)
 if(WIN32)
   target_compile_definitions(fif-host PRIVATE _WIN32_WINNT=0x0A00 WINVER=0x0A00)
   target_link_libraries(fif-host PRIVATE
-    Ws2_32 User32 Gdi32 Gdiplus Winmm
+    Ws2_32 User32 Gdi32 Gdiplus Winmm Bcrypt
     Mf Mfplat Mfuuid Wmcodecdspuuid Ole32
   )
 else()

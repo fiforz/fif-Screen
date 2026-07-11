@@ -26,6 +26,12 @@ if (Test-Path -LiteralPath $stopScript) {
     & $stopScript -InstallDir $InstallDir
 }
 
+foreach ($firewallRule in @('FifScreen-LAN-Discovery', 'FifScreen-LAN-Transport')) {
+    Get-NetFirewallRule -Name $firewallRule -ErrorAction SilentlyContinue |
+        Remove-NetFirewallRule -ErrorAction SilentlyContinue
+}
+Write-UninstallLog 'Removed FifScreen LAN firewall rules'
+
 if (Test-Path -LiteralPath $adbPath) {
     $deviceLines = @(& $adbPath devices 2>&1)
     foreach ($line in $deviceLines) {

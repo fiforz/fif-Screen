@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -23,6 +24,22 @@ inline constexpr std::size_t kTouchFrameHeaderSize = 4;
 inline constexpr std::size_t kTouchContactSize = 14;
 inline constexpr std::uint16_t kMaxTouchPointerId = 256;
 inline constexpr std::uint16_t kMaxTouchPressure = 1024;
+inline constexpr std::uint16_t kDiscoveryPort = 27182;
+inline constexpr std::size_t kDiscoveryPacketSize = 20;
+inline constexpr std::array<std::uint8_t, 8> kDiscoveryRequestMagic{
+    'F', 'I', 'F', 'D', 'I', 'S', 'C', '1'};
+inline constexpr std::array<std::uint8_t, 8> kDiscoveryResponseMagic{
+    'F', 'I', 'F', 'H', 'E', 'R', 'E', '1'};
+inline constexpr std::uint8_t kPairingPayloadVersion = 1;
+inline constexpr std::uint32_t kPairingPbkdf2Iterations = 100'000;
+inline constexpr std::size_t kPairingSaltSize = 16;
+inline constexpr std::size_t kPairingNonceSize = 32;
+inline constexpr std::size_t kPairingProofSize = 32;
+inline constexpr std::size_t kPairChallengePayloadSize = 56;
+inline constexpr std::size_t kPairResponsePayloadSize = 68;
+inline constexpr std::size_t kPairResultPayloadSize = 36;
+inline constexpr std::size_t kVideoChallengePayloadSize = 36;
+inline constexpr std::size_t kVideoAuthPayloadSize = 36;
 
 enum class MessageType : std::uint16_t {
   Hello = 1,
@@ -34,6 +51,11 @@ enum class MessageType : std::uint16_t {
   Stats = 7,
   RequestIdr = 8,
   Disconnect = 9,
+  PairChallenge = 10,
+  PairResponse = 11,
+  PairResult = 12,
+  VideoChallenge = 13,
+  VideoAuth = 14,
   VideoConfig = 100,
   VideoFrame = 101,
   InputEvent = 200,
@@ -86,6 +108,36 @@ struct TouchFrame {
   std::vector<TouchContact> contacts;
 };
 
+struct DiscoveryPacket {
+  std::uint16_t control_port = 0;
+  std::uint16_t video_port = 0;
+  std::uint32_t request_nonce = 0;
+};
+
+struct PairChallenge {
+  std::uint32_t iterations = kPairingPbkdf2Iterations;
+  std::array<std::uint8_t, kPairingSaltSize> salt{};
+  std::array<std::uint8_t, kPairingNonceSize> server_nonce{};
+};
+
+struct PairResponse {
+  std::array<std::uint8_t, kPairingNonceSize> client_nonce{};
+  std::array<std::uint8_t, kPairingProofSize> proof{};
+};
+
+struct PairResult {
+  bool accepted = false;
+  std::array<std::uint8_t, kPairingProofSize> host_proof{};
+};
+
+struct VideoChallenge {
+  std::array<std::uint8_t, kPairingNonceSize> nonce{};
+};
+
+struct VideoAuth {
+  std::array<std::uint8_t, kPairingProofSize> proof{};
+};
+
 inline std::uint64_t monotonic_now_ns() {
   const auto now = std::chrono::steady_clock::now().time_since_epoch();
   return static_cast<std::uint64_t>(
@@ -127,6 +179,152 @@ inline std::uint64_t read_u64_le(const std::uint8_t* in) {
   for (int i = 0; i < 8; ++i) {
     value |= static_cast<std::uint64_t>(in[i]) << (8u * i);
   }
+  return value;
+}
+
+inline std::array<std::uint8_t, kDiscoveryPacketSize> encode_discovery_request(
+    std::uint32_t request_nonce) {
+  std::array<std::uint8_t, kDiscoveryPacketSize> out{};
+  std::copy(kDiscoveryRequestMagic.begin(), kDiscoveryRequestMagic.end(), out.begin());
+  write_u16_le(out.data() + 8, kProtocolVersion);
+  write_u32_le(out.data() + 16, request_nonce);
+  return out;
+}
+
+inline std::array<std::uint8_t, kDiscoveryPacketSize> encode_discovery_response(
+    std::uint16_t control_port,
+    std::uint16_t video_port,
+    std::uint32_t request_nonce) {
+  std::array<std::uint8_t, kDiscoveryPacketSize> out{};
+  std::copy(kDiscoveryResponseMagic.begin(), kDiscoveryResponseMagic.end(), out.begin());
+  write_u16_le(out.data() + 8, kProtocolVersion);
+  write_u16_le(out.data() + 12, control_port);
+  write_u16_le(out.data() + 14, video_port);
+  write_u32_le(out.data() + 16, request_nonce);
+  return out;
+}
+
+inline DiscoveryPacket decode_discovery_packet(const std::uint8_t* data,
+                                                std::size_t size,
+                                                bool response) {
+  const auto& expected = response ? kDiscoveryResponseMagic : kDiscoveryRequestMagic;
+  if (size != kDiscoveryPacketSize ||
+      !std::equal(expected.begin(), expected.end(), data) ||
+      read_u16_le(data + 8) != kProtocolVersion ||
+      read_u16_le(data + 10) != 0) {
+    throw std::runtime_error("invalid discovery packet");
+  }
+  DiscoveryPacket packet;
+  packet.control_port = read_u16_le(data + 12);
+  packet.video_port = read_u16_le(data + 14);
+  packet.request_nonce = read_u32_le(data + 16);
+  if (!response && (packet.control_port != 0 || packet.video_port != 0)) {
+    throw std::runtime_error("invalid discovery request ports");
+  }
+  if (response && (packet.control_port == 0 || packet.video_port == 0)) {
+    throw std::runtime_error("invalid discovery response ports");
+  }
+  return packet;
+}
+
+inline std::vector<std::uint8_t> encode_pair_challenge(const PairChallenge& value) {
+  std::vector<std::uint8_t> out(kPairChallengePayloadSize, 0);
+  out[0] = kPairingPayloadVersion;
+  write_u32_le(out.data() + 4, value.iterations);
+  std::copy(value.salt.begin(), value.salt.end(), out.begin() + 8);
+  std::copy(value.server_nonce.begin(), value.server_nonce.end(), out.begin() + 24);
+  return out;
+}
+
+inline PairChallenge decode_pair_challenge(const std::vector<std::uint8_t>& payload) {
+  if (payload.size() != kPairChallengePayloadSize ||
+      payload[0] != kPairingPayloadVersion || payload[1] != 0 ||
+      payload[2] != 0 || payload[3] != 0) {
+    throw std::runtime_error("invalid pairing challenge");
+  }
+  PairChallenge value;
+  value.iterations = read_u32_le(payload.data() + 4);
+  if (value.iterations < 10'000 || value.iterations > 1'000'000) {
+    throw std::runtime_error("invalid pairing iteration count");
+  }
+  std::copy_n(payload.begin() + 8, value.salt.size(), value.salt.begin());
+  std::copy_n(payload.begin() + 24, value.server_nonce.size(), value.server_nonce.begin());
+  return value;
+}
+
+inline std::vector<std::uint8_t> encode_pair_response(const PairResponse& value) {
+  std::vector<std::uint8_t> out(kPairResponsePayloadSize, 0);
+  out[0] = kPairingPayloadVersion;
+  std::copy(value.client_nonce.begin(), value.client_nonce.end(), out.begin() + 4);
+  std::copy(value.proof.begin(), value.proof.end(), out.begin() + 36);
+  return out;
+}
+
+inline PairResponse decode_pair_response(const std::vector<std::uint8_t>& payload) {
+  if (payload.size() != kPairResponsePayloadSize ||
+      payload[0] != kPairingPayloadVersion || payload[1] != 0 ||
+      payload[2] != 0 || payload[3] != 0) {
+    throw std::runtime_error("invalid pairing response");
+  }
+  PairResponse value;
+  std::copy_n(payload.begin() + 4, value.client_nonce.size(), value.client_nonce.begin());
+  std::copy_n(payload.begin() + 36, value.proof.size(), value.proof.begin());
+  return value;
+}
+
+inline std::vector<std::uint8_t> encode_pair_result(const PairResult& value) {
+  std::vector<std::uint8_t> out(kPairResultPayloadSize, 0);
+  out[0] = kPairingPayloadVersion;
+  out[1] = value.accepted ? 1 : 0;
+  std::copy(value.host_proof.begin(), value.host_proof.end(), out.begin() + 4);
+  return out;
+}
+
+inline PairResult decode_pair_result(const std::vector<std::uint8_t>& payload) {
+  if (payload.size() != kPairResultPayloadSize ||
+      payload[0] != kPairingPayloadVersion || payload[1] > 1 ||
+      payload[2] != 0 || payload[3] != 0) {
+    throw std::runtime_error("invalid pairing result");
+  }
+  PairResult value;
+  value.accepted = payload[1] == 1;
+  std::copy_n(payload.begin() + 4, value.host_proof.size(), value.host_proof.begin());
+  return value;
+}
+
+inline std::vector<std::uint8_t> encode_video_challenge(const VideoChallenge& value) {
+  std::vector<std::uint8_t> out(kVideoChallengePayloadSize, 0);
+  out[0] = kPairingPayloadVersion;
+  std::copy(value.nonce.begin(), value.nonce.end(), out.begin() + 4);
+  return out;
+}
+
+inline VideoChallenge decode_video_challenge(const std::vector<std::uint8_t>& payload) {
+  if (payload.size() != kVideoChallengePayloadSize ||
+      payload[0] != kPairingPayloadVersion || payload[1] != 0 ||
+      payload[2] != 0 || payload[3] != 0) {
+    throw std::runtime_error("invalid video challenge");
+  }
+  VideoChallenge value;
+  std::copy_n(payload.begin() + 4, value.nonce.size(), value.nonce.begin());
+  return value;
+}
+
+inline std::vector<std::uint8_t> encode_video_auth(const VideoAuth& value) {
+  std::vector<std::uint8_t> out(kVideoAuthPayloadSize, 0);
+  out[0] = kPairingPayloadVersion;
+  std::copy(value.proof.begin(), value.proof.end(), out.begin() + 4);
+  return out;
+}
+
+inline VideoAuth decode_video_auth(const std::vector<std::uint8_t>& payload) {
+  if (payload.size() != kVideoAuthPayloadSize ||
+      payload[0] != kPairingPayloadVersion || payload[1] != 0 ||
+      payload[2] != 0 || payload[3] != 0) {
+    throw std::runtime_error("invalid video authentication");
+  }
+  VideoAuth value;
+  std::copy_n(payload.begin() + 4, value.proof.size(), value.proof.begin());
   return value;
 }
 

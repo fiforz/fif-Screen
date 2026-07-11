@@ -1,17 +1,23 @@
 # FifScreen Protocol Spec
 
-Status: draft v0.1 for USB MVP.
+Status: draft v0.2 for USB and LAN transports.
 
 ## Goals
 
 One protocol must serve USB, LAN, and future remote transports. The transport only moves bytes. It must not know about H.264, display modes, or input semantics.
 
-MVP uses two independent TCP connections over `adb reverse`:
+USB and LAN use two independent TCP connections:
 
 - Control channel: handshake, ping/pong, display mode, codec config, input, statistics, errors.
 - Video channel: encoded H.264 frames, timestamps, frame IDs, IDR/config flags.
 
 This prevents large video packets from blocking control messages.
+
+Transport binding:
+
+- USB: Windows binds TCP to `127.0.0.1`; Android reaches it through `adb reverse`.
+- LAN: Windows binds TCP to local interfaces and answers discovery on UDP `27182`; host firewall rules restrict access to `LocalSubnet`.
+- Relay: endpoint-directory and host transport interfaces are reserved, but no server transport is implemented.
 
 ## Byte Order
 
@@ -51,6 +57,11 @@ Receivers must reject larger payloads and close the channel with an error.
 | 7 | Stats | Control | UTF-8 JSON |
 | 8 | RequestIdr | Control | Empty |
 | 9 | Disconnect | Control | UTF-8 JSON |
+| 10 | PairChallenge | Control | 56-byte binary challenge |
+| 11 | PairResponse | Control | 68-byte binary client proof |
+| 12 | PairResult | Control | 36-byte binary result and host proof |
+| 13 | VideoChallenge | Video | 36-byte binary nonce |
+| 14 | VideoAuth | Video | 36-byte binary proof |
 | 100 | VideoConfig | Video | Codec config bytes, such as SPS/PPS for H.264 |
 | 101 | VideoFrame | Video | Encoded access unit |
 | 200 | InputEvent | Control | Versioned binary input payload |
@@ -96,6 +107,38 @@ Windows replies `HelloAck`:
 ```
 
 Android then opens the video channel.
+
+## LAN Discovery
+
+Android sends a 20-byte UDP datagram to port `27182` on the limited broadcast address and each active IPv4 interface broadcast address. The PIN is never included.
+
+| Offset | Size | Request | Response |
+| --- | ---: | --- | --- |
+| 0 | 8 | ASCII `FIFDISC1` | ASCII `FIFHERE1` |
+| 8 | 2 | Protocol version `1` | Protocol version `1` |
+| 10 | 2 | Reserved zero | Reserved zero |
+| 12 | 2 | Zero | Control TCP port |
+| 14 | 2 | Zero | Video TCP port |
+| 16 | 4 | Random request nonce | Echoed request nonce |
+
+Android accepts only a correctly sized response with matching magic, version, nonce, and nonzero ports. It connects to the source IPv4 address of that response.
+
+## LAN Pairing
+
+The user enters the same four ASCII digits on Windows and Android. The PIN is held in process memory only and is not passed on the host command line.
+
+1. Windows sends `PairChallenge`: payload version, `100000` PBKDF2 iterations, a random 16-byte salt, and a random 32-byte server nonce.
+2. Android derives a 32-byte PIN key using PBKDF2-HMAC-SHA256.
+3. Android creates a random 32-byte client nonce and sends `PairResponse` with `HMAC(pin_key, "FifScreen/control/v1" || server_nonce || client_nonce)`.
+4. Both sides derive `session_key = HMAC(pin_key, "FifScreen/session/v1" || server_nonce || client_nonce)`.
+5. Windows validates the client proof and returns `PairResult` with an accepted byte and `HMAC(session_key, "FifScreen/accepted/v1")`.
+6. Android validates the host proof before sending the normal `Hello` packet.
+7. On the video connection Windows sends a random nonce in `VideoChallenge`; Android replies with `HMAC(session_key, "FifScreen/video/v1" || video_nonce)` in `VideoAuth`.
+8. Windows consumes the session after one successful video authentication. Unused sessions expire after 30 seconds.
+
+All pairing binary payloads start with payload version `1`; reserved bytes must be zero. Pairing reads time out after 7 seconds. Failed PIN attempts are serialized by the control listener and delayed before retry.
+
+The LAN handshake authenticates both peers against the shared PIN, but protocol version 1 does not encrypt subsequent video or control traffic. LAN mode is therefore limited to trusted local networks. A future relay transport must add an encrypted channel and must not weaken the USB loopback behavior.
 
 ## Touch Input
 

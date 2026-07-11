@@ -3,6 +3,7 @@
 #include "adb.hpp"
 #include "encoder.hpp"
 #include "mf_h264_encoder.hpp"
+#include "pairing_crypto.hpp"
 #include "win32_socket.hpp"
 #include "screen_capture.hpp"
 #include "touch_injector.hpp"
@@ -228,17 +229,47 @@ std::vector<std::uint8_t> make_packet(fif::MessageType type,
   return fif::encode_packet(header, make_json_payload(json));
 }
 
-std::string make_hello_ack_json(std::uint16_t control_port, std::uint16_t video_port) {
+const char* transport_name(TransportMode transport) {
+  switch (transport) {
+    case TransportMode::Usb:
+      return "usb";
+    case TransportMode::Lan:
+      return "lan";
+    case TransportMode::Relay:
+      return "relay";
+  }
+  return "unknown";
+}
+
+std::optional<fif::Packet> receive_one_packet(Socket& socket,
+                                               std::uint32_t max_payload) {
+  fif::PacketReader reader(max_payload);
+  for (;;) {
+    const auto bytes = socket.recv_some(4096);
+    if (!bytes) {
+      return std::nullopt;
+    }
+    reader.feed(bytes->data(), bytes->size());
+    if (auto packet = reader.next()) {
+      return packet;
+    }
+  }
+}
+
+std::string make_hello_ack_json(const HostConfig& host_config) {
   const VideoMode mode = selected_video_mode();
   std::ostringstream json;
-  json << "{\"role\":\"windows-host\",\"protocol\":1,\"controlPort\":" << control_port
-       << ",\"videoPort\":" << video_port
+  json << "{\"role\":\"windows-host\",\"protocol\":1,\"controlPort\":"
+       << host_config.control_port
+       << ",\"videoPort\":" << host_config.video_port
+       << ",\"transport\":\"" << transport_name(host_config.transport) << "\""
        << ",\"selectedMode\":{\"width\":" << mode.width
        << ",\"height\":" << mode.height
        << ",\"refreshHz\":" << mode.fps << "}"
        << ",\"codec\":{\"mime\":\"video/avc\",\"lowLatency\":true}"
        << ",\"input\":{\"touch\":true,\"maxContacts\":"
-       << kMaxTouchContacts << "}}";
+       << kMaxTouchContacts << "}"
+       << ",\"relay\":{\"supported\":false}}";
   return json.str();
 }
 
@@ -582,9 +613,17 @@ int HostServer::run() {
   ScopedTimerResolution timer_resolution;
   WinsockRuntime winsock;
 
+  if (config_.transport == TransportMode::Relay) {
+    throw std::runtime_error("relay transport is reserved but not implemented");
+  }
+
   if (config_.setup_adb_reverse) {
     std::thread adb_reverse([this] { run_adb_reverse_maintainer(); });
     adb_reverse.detach();
+  }
+  if (config_.transport == TransportMode::Lan) {
+    std::thread discovery([this] { run_lan_discovery(); });
+    discovery.detach();
   }
 
   std::thread control([this] { run_control_channel(); });
@@ -594,6 +633,25 @@ int HostServer::run() {
   video.join();
 
   return 0;
+}
+
+void HostServer::run_lan_discovery() {
+  UdpServer server(config_.discovery_port);
+  server.listen();
+  for (;;) {
+    const auto datagram = server.receive(fif::kDiscoveryPacketSize);
+    if (!datagram) {
+      continue;
+    }
+    try {
+      const auto request = fif::decode_discovery_packet(
+          datagram->bytes.data(), datagram->bytes.size(), false);
+      const auto response = fif::encode_discovery_response(
+          config_.control_port, config_.video_port, request.request_nonce);
+      (void)server.send_to(response, datagram->peer);
+    } catch (const std::exception&) {
+    }
+  }
 }
 
 void HostServer::run_adb_reverse_maintainer() {
@@ -612,8 +670,145 @@ void HostServer::run_adb_reverse_maintainer() {
   }
 }
 
+void HostServer::publish_lan_session(
+    const std::array<std::uint8_t, 32>& key) {
+  std::lock_guard lock(lan_session_mutex_);
+  LanSession session;
+  session.key = key;
+  session.generation = ++lan_session_generation_;
+  session.created = std::chrono::steady_clock::now();
+  lan_session_ = session;
+}
+
+std::optional<HostServer::LanSession> HostServer::current_lan_session() {
+  std::lock_guard lock(lan_session_mutex_);
+  if (!lan_session_ || lan_session_->video_authenticated ||
+      std::chrono::steady_clock::now() - lan_session_->created >
+          std::chrono::seconds(30)) {
+    return std::nullopt;
+  }
+  return lan_session_;
+}
+
+bool HostServer::complete_video_auth(std::uint64_t generation) {
+  std::lock_guard lock(lan_session_mutex_);
+  if (!lan_session_ || lan_session_->generation != generation ||
+      lan_session_->video_authenticated) {
+    return false;
+  }
+  lan_session_->video_authenticated = true;
+  lan_session_->key.fill(0);
+  return true;
+}
+
+bool HostServer::authenticate_lan_control(Socket& client,
+                                          std::uint64_t& sequence) {
+  {
+    std::lock_guard lock(lan_session_mutex_);
+    lan_session_.reset();
+  }
+  client.set_receive_timeout(7000);
+  fif::PairChallenge challenge;
+  fill_secure_random(challenge.salt);
+  fill_secure_random(challenge.server_nonce);
+
+  fif::PacketHeader challenge_header;
+  challenge_header.type = fif::MessageType::PairChallenge;
+  challenge_header.sequence = sequence++;
+  if (!client.send_all(fif::encode_packet(
+          challenge_header, fif::encode_pair_challenge(challenge)))) {
+    return false;
+  }
+
+  try {
+    const auto packet = receive_one_packet(client, fif::kMaxControlPayload);
+    if (!packet || packet->header.type != fif::MessageType::PairResponse) {
+      return false;
+    }
+    const auto response = fif::decode_pair_response(packet->payload);
+    auto material = derive_pairing_material(
+        config_.pairing_pin, challenge, response.client_nonce);
+    const bool accepted = secure_equal(material.control_proof, response.proof);
+
+    fif::PairResult result;
+    result.accepted = accepted;
+    if (accepted) {
+      result.host_proof = make_host_proof(material.session_key);
+    }
+    fif::PacketHeader result_header;
+    result_header.type = fif::MessageType::PairResult;
+    result_header.sequence = sequence++;
+    const bool sent = client.send_all(fif::encode_packet(
+        result_header, fif::encode_pair_result(result)));
+    if (accepted && sent) {
+      publish_lan_session(material.session_key);
+    }
+    material.control_proof.fill(0);
+    material.session_key.fill(0);
+    if (!accepted) {
+      std::cerr << "FIFSCREEN_HOST event=lan_pairing_rejected\n";
+      std::this_thread::sleep_for(std::chrono::milliseconds(750));
+      return false;
+    }
+    if (!sent) {
+      return false;
+    }
+    client.set_receive_timeout(0);
+    std::cout << "FIFSCREEN_HOST event=lan_pairing_accepted\n";
+    return true;
+  } catch (const std::exception& error) {
+    std::cerr << "FIFSCREEN_HOST event=lan_pairing_error message=\""
+              << error.what() << "\"\n";
+    return false;
+  }
+}
+
+bool HostServer::authenticate_lan_video(Socket& client,
+                                        std::uint64_t& sequence) {
+  const auto session = current_lan_session();
+  if (!session) {
+    std::cerr << "FIFSCREEN_HOST event=lan_video_rejected reason=no_session\n";
+    return false;
+  }
+
+  client.set_receive_timeout(7000);
+  fif::VideoChallenge challenge;
+  fill_secure_random(challenge.nonce);
+  fif::PacketHeader challenge_header;
+  challenge_header.type = fif::MessageType::VideoChallenge;
+  challenge_header.sequence = sequence++;
+  if (!client.send_all(fif::encode_packet(
+          challenge_header, fif::encode_video_challenge(challenge)))) {
+    return false;
+  }
+
+  try {
+    const auto packet = receive_one_packet(client, fif::kMaxControlPayload);
+    if (!packet || packet->header.type != fif::MessageType::VideoAuth) {
+      return false;
+    }
+    const auto authentication = fif::decode_video_auth(packet->payload);
+    const auto expected = make_video_proof(session->key, challenge.nonce);
+    if (!secure_equal(authentication.proof, expected) ||
+        !complete_video_auth(session->generation)) {
+      std::cerr << "FIFSCREEN_HOST event=lan_video_rejected reason=invalid_proof\n";
+      return false;
+    }
+    client.set_receive_timeout(0);
+    std::cout << "FIFSCREEN_HOST event=lan_video_authenticated\n";
+    return true;
+  } catch (const std::exception& error) {
+    std::cerr << "FIFSCREEN_HOST event=lan_video_auth_error message=\""
+              << error.what() << "\"\n";
+    return false;
+  }
+}
+
 void HostServer::run_control_channel() {
-  TcpServer server(config_.control_port, "control");
+  const auto bind_mode = config_.transport == TransportMode::Usb
+      ? BindMode::Loopback
+      : BindMode::Any;
+  TcpServer server(config_.control_port, "control", bind_mode);
   server.listen();
 
   std::uint64_t sequence = 1;
@@ -623,13 +818,18 @@ void HostServer::run_control_channel() {
     std::cout << "waiting for Android control client\n";
     Socket client = server.accept_one();
     std::cout << "control client connected\n";
+    if (config_.transport == TransportMode::Lan &&
+        !authenticate_lan_control(client, sequence)) {
+      client.close();
+      continue;
+    }
     auto touch_target = find_fifscreen_display();
 
     fif::PacketReader reader(fif::kMaxControlPayload);
     const auto hello_ack = make_packet(
         fif::MessageType::HelloAck,
         sequence++,
-        make_hello_ack_json(config_.control_port, config_.video_port));
+        make_hello_ack_json(config_));
 
     while (client.valid()) {
       auto bytes = client.recv_some(4096);
@@ -695,7 +895,10 @@ void HostServer::run_control_channel() {
 }
 
 void HostServer::run_video_channel() {
-  TcpServer server(config_.video_port, "video");
+  const auto bind_mode = config_.transport == TransportMode::Usb
+      ? BindMode::Loopback
+      : BindMode::Any;
+  TcpServer server(config_.video_port, "video", bind_mode);
   server.listen();
 
   auto target = find_fifscreen_display();
@@ -718,6 +921,12 @@ void HostServer::run_video_channel() {
     std::cout << "waiting for Android video client\n";
     Socket client = server.accept_one();
     std::cout << "video client connected\n";
+    std::uint64_t sequence = 1;
+    if (config_.transport == TransportMode::Lan &&
+        !authenticate_lan_video(client, sequence)) {
+      client.close();
+      continue;
+    }
 
     if (!target) {
       target = find_fifscreen_display();
@@ -752,7 +961,6 @@ void HostServer::run_video_channel() {
                 << encoder.last_error() << "\"\n";
     }
 
-    std::uint64_t sequence = 1;
     std::ostringstream config;
     config << "{\"codec\":\"" << (h264_enabled ? "video/avc" : "raw-rgb565-dirty")
            << "\",\"width\":" << mode.width

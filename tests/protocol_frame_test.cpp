@@ -162,6 +162,47 @@ void test_rejects_invalid_touch_frame() {
   assert(rejected);
 }
 
+void test_lan_discovery_round_trip() {
+  constexpr std::uint32_t nonce = 0x78563412;
+  const auto request = fif::encode_discovery_request(nonce);
+  const auto decoded_request = fif::decode_discovery_packet(
+      request.data(), request.size(), false);
+  assert(decoded_request.control_port == 0);
+  assert(decoded_request.video_port == 0);
+  assert(decoded_request.request_nonce == nonce);
+
+  const auto response = fif::encode_discovery_response(27183, 27184, nonce);
+  const auto decoded_response = fif::decode_discovery_packet(
+      response.data(), response.size(), true);
+  assert(decoded_response.control_port == 27183);
+  assert(decoded_response.video_port == 27184);
+  assert(decoded_response.request_nonce == nonce);
+}
+
+void test_pairing_payload_round_trip() {
+  fif::PairChallenge challenge;
+  challenge.iterations = 100000;
+  for (std::size_t index = 0; index < challenge.salt.size(); ++index) {
+    challenge.salt[index] = static_cast<std::uint8_t>(index);
+  }
+  for (std::size_t index = 0; index < challenge.server_nonce.size(); ++index) {
+    challenge.server_nonce[index] = static_cast<std::uint8_t>(0x10 + index);
+  }
+  const auto decoded_challenge = fif::decode_pair_challenge(
+      fif::encode_pair_challenge(challenge));
+  assert(decoded_challenge.iterations == challenge.iterations);
+  assert(decoded_challenge.salt == challenge.salt);
+  assert(decoded_challenge.server_nonce == challenge.server_nonce);
+
+  fif::PairResult result;
+  result.accepted = true;
+  result.host_proof.fill(0xa5);
+  const auto decoded_result = fif::decode_pair_result(
+      fif::encode_pair_result(result));
+  assert(decoded_result.accepted);
+  assert(decoded_result.host_proof == result.host_proof);
+}
+
 }  // namespace
 
 int main() {
@@ -171,6 +212,8 @@ int main() {
   test_rejects_large_payload();
   test_touch_frame_round_trip();
   test_rejects_invalid_touch_frame();
+  test_lan_discovery_round_trip();
+  test_pairing_payload_round_trip();
   std::cout << "protocol tests passed\n";
   return 0;
 }

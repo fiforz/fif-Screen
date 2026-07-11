@@ -15,6 +15,8 @@ param(
 
     [string]$UpdateBaseUrl = '',
 
+    [string]$NativeBuildDir = '',
+
     [switch]$SkipBuild
 )
 
@@ -196,7 +198,13 @@ $ApkSigner = Find-RequiredFile -Name 'apksigner.bat' -Candidates @(
     (Join-Path $RepoRoot 'tools\android-sdk\build-tools\34.0.0\apksigner.bat')
 )
 
-$releaseBuildDir = Join-Path $RepoRoot 'build\installer-release'
+$releaseBuildDir = if ([string]::IsNullOrWhiteSpace($NativeBuildDir)) {
+    Join-Path $RepoRoot 'build\installer-release'
+} elseif ([IO.Path]::IsPathRooted($NativeBuildDir)) {
+    [IO.Path]::GetFullPath($NativeBuildDir)
+} else {
+    [IO.Path]::GetFullPath((Join-Path $RepoRoot $NativeBuildDir))
+}
 $hostPath = Join-Path $releaseBuildDir 'windows-host\fif-host.exe'
 $launcherPath = Join-Path $releaseBuildDir 'windows-driver\FifIddDeviceLauncher\fif-idd-device-launcher.exe'
 $androidDebugApk = Join-Path $RepoRoot 'android-client\build\outputs\apk\debug\android-client-debug.apk'

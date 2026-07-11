@@ -2,12 +2,12 @@
     "schemaVersion":  1,
     "product":  "FifScreen",
     "channel":  "development",
-    "version":  "0.4.1",
+    "version":  "0.5.0",
     "architecture":  "x64",
-    "publishedAt":  "2026-07-11T02:25:56.5619163Z",
-    "releaseNotes":  "# FifScreen 0.4.1\n\n本版本修复 Android 画面可以显示、但触摸 Windows 扩展桌面无响应的问题。\n\n## 更新内容\n\n- 控制中心会校验 Windows 主机和设备启动器版本，避免误启动旧构建产物；\n- 发现旧主机时只替换主机进程，保留已存在的扩展显示设备和 Owner 进程；\n- Android 端始终消费完整触摸手势，避免连接状态切换时丢失移动或抬起；\n- 增加触摸能力协商、输入就绪和发送结果日志，便于定位不同 Android 设备的问题；\n- 已在真实 Android 设备和 1920 x 1080 FifScreen 扩展屏上验证点击可产生 Windows 原生 `WM_POINTERDOWN/UP`，并兼容普通鼠标点击消息。\n\n## 安装说明\n\n这是开发预览版，包含测试签名显示驱动。Windows 必须已允许测试签名驱动，安装程序不会修改 BCD 或安全启动设置。\n",
-    "installerName":  "FifScreen-Setup-0.4.1-dev-x64.exe",
-    "installerUrl":  "https://github.com/fiforz/fif-Screen/releases/download/v0.4.1/FifScreen-Setup-0.4.1-dev-x64.exe",
-    "sha256":  "8DC898282F6F181F373DDC5CE887F6142E8340A55D80014631E469023C2390C3",
-    "releaseUrl":  "https://github.com/fiforz/fif-Screen/releases/tag/v0.4.1"
+    "publishedAt":  "2026-07-11T07:59:42.8750643Z",
+    "releaseNotes":  "# FifScreen 0.5.0\n\n本版本在保留现有 USB 调试连接的基础上，新增无线局域网扩展屏。\n\n## 更新内容\n\n- Windows 控制中心与 Android 应用均可手动选择“USB 调试”或“无线局域网”；\n- 两台设备连接同一局域网并输入相同四位 PIN 后，Android 会自动发现电脑并连接；\n- 无线模式支持与 USB 一致的 1920 x 1080、目标 50 FPS H.264 画面和 Windows 原生触控；\n- PIN 使用 PBKDF2-HMAC-SHA256 挑战响应完成客户端证明、主机证明和独立视频通道认证；\n- 无线端口的 Windows 防火墙规则仅允许本地子网访问，卸载 FifScreen 时会自动移除；\n- 代码已预留服务器端点目录和中继传输接口，当前版本不连接任何服务器；\n- USB 模式仍只监听 `127.0.0.1` 并使用原有 ADB reverse，不需要输入 PIN。\n\n## 使用无线连接\n\n1. 首次使用先通过 USB 让 Windows 控制中心安装 Android APK；\n2. 确保电脑和 Android 设备位于同一个可信局域网；\n3. Windows 控制中心选择“无线局域网”，输入四位 PIN 并启动扩展屏；\n4. Android 应用按返回键打开连接设置，选择“无线局域网连接”并输入相同 PIN。\n\n无线协议当前提供握手认证，但画面和触控流尚未端到端加密，请勿在公共或不可信网络使用。\n\n## 安装说明\n\n这是开发预览版，包含测试签名显示驱动。Windows 必须已允许测试签名驱动，安装程序不会修改 BCD、安全启动设置或主动重启电脑。\n",
+    "installerName":  "FifScreen-Setup-0.5.0-dev-x64.exe",
+    "installerUrl":  "https://github.com/fiforz/fif-Screen/releases/download/v0.5.0/FifScreen-Setup-0.5.0-dev-x64.exe",
+    "sha256":  "3E7E16588BEE3146966B233317B48137B13F40BDCF065EEC24E5BEF5325FB45F",
+    "releaseUrl":  "https://github.com/fiforz/fif-Screen/releases/tag/v0.5.0"
 }

@@ -20,9 +20,7 @@ import org.json.JSONObject
 class StreamClient(
     private val surface: Surface,
     private val listener: Listener,
-    private val host: String = "127.0.0.1",
-    private val controlPort: Int = 27183,
-    private val videoPort: Int = 27184
+    private val endpointProvider: EndpointProvider = UsbEndpointProvider()
 ) {
     interface Listener {
         fun onStatus(text: String)
@@ -38,19 +36,32 @@ class StreamClient(
     private var decoder: H264SurfaceDecoder? = null
     private var dirtyRawRenderer: DirtyRawSurfaceRenderer? = null
     private var rawRenderer: RawSurfaceRenderer? = null
-    private val inputSequence = AtomicLong(2)
+    private val controlSequence = AtomicLong(1)
     private val inputLock = ReentrantLock()
     private val inputAvailable = inputLock.newCondition()
     private val inputQueue = ArrayDeque<QueuedInput>()
     private val controlWriteLock = Any()
 
     fun run() {
+        var sessionKey: ByteArray? = null
         try {
+            listener.onStatus("Resolving connection")
+            val endpoint = endpointProvider.resolve()
+            FifLog.network(
+                "event" to "endpoint_resolved",
+                "transport" to endpoint.mode.preferenceValue,
+                "host" to endpoint.host,
+                "control_port" to endpoint.controlPort,
+                "video_port" to endpoint.videoPort
+            )
             listener.onStatus("Connecting control")
-            FifLog.network("event" to "connect_start", "port" to controlPort)
-            controlSocket = connect(controlPort)
+            FifLog.network("event" to "connect_start", "port" to endpoint.controlPort)
+            controlSocket = connect(endpoint.host, endpoint.controlPort)
             val control = controlSocket ?: error("control socket missing")
-            val helloSentNs = sendHello(control)
+            if (endpoint.mode == ConnectionMode.LAN) {
+                sessionKey = pairControl(control, endpoint.pairingPin ?: error("pairing PIN missing"))
+            }
+            val helloSentNs = sendHello(control, endpoint.mode)
             FifLog.network("event" to "hello_sent", "android_timestamp_ns" to helloSentNs)
             val ack = FifProtocol.readPacket(control.getInputStream(), FifProtocol.MAX_CONTROL_PAYLOAD)
             val ackReceivedNs = System.nanoTime()
@@ -72,15 +83,20 @@ class StreamClient(
             }
 
             listener.onStatus("Connecting video")
-            FifLog.network("event" to "connect_start", "port" to videoPort)
-            videoSocket = connect(videoPort)
-            readVideoLoop(videoSocket ?: error("video socket missing"))
+            FifLog.network("event" to "connect_start", "port" to endpoint.videoPort)
+            videoSocket = connect(endpoint.host, endpoint.videoPort)
+            val video = videoSocket ?: error("video socket missing")
+            if (endpoint.mode == ConnectionMode.LAN) {
+                pairVideo(video, sessionKey ?: error("LAN session key missing"))
+            }
+            readVideoLoop(video)
         } catch (e: Exception) {
             if (running) {
                 FifLog.network("event" to "client_error", "message" to e.message)
                 listener.onStatus("Error: ${e.message}")
             }
         } finally {
+            sessionKey?.fill(0)
             cleanup()
             listener.onStopped()
         }
@@ -137,20 +153,103 @@ class StreamClient(
         return true
     }
 
-    private fun connect(port: Int): Socket =
+    private fun connect(host: String, port: Int): Socket =
         Socket().apply {
             tcpNoDelay = true
             connect(InetSocketAddress(host, port), 3000)
             FifLog.network("event" to "connect_success", "host" to host, "port" to port)
         }
 
-    private fun sendHello(socket: Socket): Long {
+    private fun sendHello(socket: Socket, mode: ConnectionMode): Long {
         val payload = """
-            {"role":"android-client","protocol":1,"appVersion":"${BuildConfig.VERSION_NAME}","screen":{"width":1280,"height":720,"refreshHz":60},"decoders":[{"codec":"video/avc","lowLatency":true}],"input":{"touch":true,"maxContacts":${FifProtocol.MAX_TOUCH_CONTACTS}}}
+            {"role":"android-client","protocol":1,"appVersion":"${BuildConfig.VERSION_NAME}","transport":"${mode.preferenceValue}","screen":{"width":1280,"height":720,"refreshHz":60},"decoders":[{"codec":"video/avc","lowLatency":true}],"input":{"touch":true,"maxContacts":${FifProtocol.MAX_TOUCH_CONTACTS}}}
         """.trimIndent().toByteArray(StandardCharsets.UTF_8)
         val timestampNs = System.nanoTime()
-        FifProtocol.writePacket(socket.getOutputStream(), FifProtocol.TYPE_HELLO, 1, 0, payload)
+        FifProtocol.writePacket(
+            socket.getOutputStream(),
+            FifProtocol.TYPE_HELLO,
+            controlSequence.getAndIncrement(),
+            0,
+            payload
+        )
         return timestampNs
+    }
+
+    private fun pairControl(socket: Socket, pin: String): ByteArray {
+        listener.onStatus("Pairing LAN")
+        socket.soTimeout = PAIRING_TIMEOUT_MS
+        val challengePacket = FifProtocol.readPacket(
+            socket.getInputStream(), FifProtocol.MAX_CONTROL_PAYLOAD
+        )
+        if (challengePacket.header.type != FifProtocol.TYPE_PAIR_CHALLENGE) {
+            throw PairingException("电脑未进入无线配对模式")
+        }
+        val challenge = FifProtocol.decodePairChallenge(challengePacket.payload)
+        val clientNonce = PairingCrypto.randomNonce()
+        val material = PairingCrypto.deriveMaterial(pin, challenge, clientNonce)
+        var paired = false
+        try {
+            try {
+                FifProtocol.writePacket(
+                    socket.getOutputStream(),
+                    FifProtocol.TYPE_PAIR_RESPONSE,
+                    controlSequence.getAndIncrement(),
+                    0,
+                    FifProtocol.encodePairResponse(
+                        FifProtocol.PairResponse(clientNonce, material.controlProof)
+                    )
+                )
+            } finally {
+                material.controlProof.fill(0)
+            }
+            val resultPacket = FifProtocol.readPacket(
+                socket.getInputStream(), FifProtocol.MAX_CONTROL_PAYLOAD
+            )
+            if (resultPacket.header.type != FifProtocol.TYPE_PAIR_RESULT) {
+                throw PairingException("无线配对响应无效")
+            }
+            val result = FifProtocol.decodePairResult(resultPacket.payload)
+            val expectedHostProof = PairingCrypto.hostProof(material.sessionKey)
+            val proofValid = PairingCrypto.secureEquals(result.hostProof, expectedHostProof)
+            expectedHostProof.fill(0)
+            if (!result.accepted || !proofValid) {
+                throw PairingException("四位 PIN 不一致")
+            }
+            socket.soTimeout = 0
+            FifLog.network("event" to "lan_pairing_accepted")
+            paired = true
+            return material.sessionKey
+        } finally {
+            material.controlProof.fill(0)
+            if (!paired) {
+                material.sessionKey.fill(0)
+            }
+        }
+    }
+
+    private fun pairVideo(socket: Socket, sessionKey: ByteArray) {
+        socket.soTimeout = PAIRING_TIMEOUT_MS
+        val challengePacket = FifProtocol.readPacket(
+            socket.getInputStream(), FifProtocol.MAX_CONTROL_PAYLOAD
+        )
+        if (challengePacket.header.type != FifProtocol.TYPE_VIDEO_CHALLENGE) {
+            throw PairingException("无线视频认证响应无效")
+        }
+        val challenge = FifProtocol.decodeVideoChallenge(challengePacket.payload)
+        val proof = PairingCrypto.videoProof(sessionKey, challenge.nonce)
+        try {
+            FifProtocol.writePacket(
+                socket.getOutputStream(),
+                FifProtocol.TYPE_VIDEO_AUTH,
+                controlSequence.getAndIncrement(),
+                0,
+                FifProtocol.encodeVideoAuth(proof)
+            )
+        } finally {
+            proof.fill(0)
+        }
+        socket.soTimeout = 0
+        FifLog.network("event" to "lan_video_authenticated")
     }
 
     private fun startInputSender(socket: Socket) {
@@ -176,7 +275,7 @@ class StreamClient(
                     FifProtocol.writePacket(
                         output,
                         FifProtocol.TYPE_INPUT_EVENT,
-                        inputSequence.getAndIncrement(),
+                        controlSequence.getAndIncrement(),
                         0,
                         queued.payload
                     )
@@ -371,5 +470,8 @@ class StreamClient(
 
     private companion object {
         const val MAX_INPUT_QUEUE_SIZE = 64
+        const val PAIRING_TIMEOUT_MS = 7000
     }
 }
+
+class PairingException(message: String) : Exception(message)
