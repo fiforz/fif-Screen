@@ -8,7 +8,7 @@ One protocol must serve USB, LAN, and future remote transports. The transport on
 
 MVP uses two independent TCP connections over `adb reverse`:
 
-- Control channel: handshake, ping/pong, display mode, codec config, statistics, errors.
+- Control channel: handshake, ping/pong, display mode, codec config, input, statistics, errors.
 - Video channel: encoded H.264 frames, timestamps, frame IDs, IDR/config flags.
 
 This prevents large video packets from blocking control messages.
@@ -53,7 +53,7 @@ Receivers must reject larger payloads and close the channel with an error.
 | 9 | Disconnect | Control | UTF-8 JSON |
 | 100 | VideoConfig | Video | Codec config bytes, such as SPS/PPS for H.264 |
 | 101 | VideoFrame | Video | Encoded access unit |
-| 200 | InputEvent | Control | Reserved for phase 2 |
+| 200 | InputEvent | Control | Versioned binary input payload |
 | 900 | Error | Control | UTF-8 JSON |
 
 ## Video Flags
@@ -76,7 +76,8 @@ Android sends `Hello`:
   "protocol": 1,
   "appVersion": "0.1",
   "screen": {"width": 1920, "height": 1080, "refreshHz": 60},
-  "decoders": [{"codec": "video/avc", "name": "decoder-name", "lowLatency": true}]
+  "decoders": [{"codec": "video/avc", "name": "decoder-name", "lowLatency": true}],
+  "input": {"touch": true, "maxContacts": 16}
 }
 ```
 
@@ -89,11 +90,44 @@ Windows replies `HelloAck`:
   "controlPort": 27183,
   "videoPort": 27184,
   "selectedMode": {"width": 1280, "height": 720, "refreshHz": 60},
-  "codec": {"mime": "video/avc", "profile": "baseline", "lowLatency": true}
+  "codec": {"mime": "video/avc", "profile": "baseline", "lowLatency": true},
+  "input": {"touch": true, "maxContacts": 16}
 }
 ```
 
 Android then opens the video channel.
+
+## Touch Input
+
+Android sends one `InputEvent` packet for each `MotionEvent`. A touch frame always contains
+all pointers reported by that Android event. Coordinates and contact dimensions are normalized
+to `0..65535` relative to the rendered video surface.
+
+Touch frame header:
+
+| Offset | Size | Field | Description |
+| --- | ---: | --- | --- |
+| 0 | 1 | kind | `1` for a touch frame |
+| 1 | 1 | payload_version | Currently `1` |
+| 2 | 1 | contact_count | `1..16` |
+| 3 | 1 | reserved | Must be zero |
+
+Each contact then occupies 14 bytes:
+
+| Offset | Size | Field | Description |
+| --- | ---: | --- | --- |
+| 0 | 2 | pointer_id | `1..256`, unique for the contact lifetime |
+| 2 | 1 | phase | `1` down, `2` move, `3` up, `4` cancel |
+| 3 | 1 | reserved | Must be zero |
+| 4 | 2 | x | Normalized horizontal coordinate |
+| 6 | 2 | y | Normalized vertical coordinate |
+| 8 | 2 | pressure | `0..1024` |
+| 10 | 2 | major | Normalized major contact diameter |
+| 12 | 2 | minor | Normalized minor contact diameter |
+
+Receivers must reject duplicate IDs, invalid phases, unsupported payload versions, and frames
+whose length does not exactly match `contact_count`. On control-channel disconnect, Windows must
+cancel every injected contact still active.
 
 ## Required Receiver Behavior
 
@@ -112,4 +146,3 @@ Receivers must handle:
 ## Queue Rule
 
 Every video queue is bounded. If the consumer falls behind, drop old frames and request or send an IDR frame. Real-time display is more important than showing every stale frame.
-

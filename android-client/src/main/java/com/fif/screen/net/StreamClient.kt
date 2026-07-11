@@ -10,6 +10,10 @@ import com.fif.screen.video.RawSurfaceRenderer
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.nio.charset.StandardCharsets
+import java.util.ArrayDeque
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import kotlin.math.roundToInt
 import org.json.JSONObject
 
@@ -27,11 +31,18 @@ class StreamClient(
     }
 
     @Volatile private var running = true
+    @Volatile private var inputReady = false
     private var controlSocket: Socket? = null
     private var videoSocket: Socket? = null
+    private var inputThread: Thread? = null
     private var decoder: H264SurfaceDecoder? = null
     private var dirtyRawRenderer: DirtyRawSurfaceRenderer? = null
     private var rawRenderer: RawSurfaceRenderer? = null
+    private val inputSequence = AtomicLong(2)
+    private val inputLock = ReentrantLock()
+    private val inputAvailable = inputLock.newCondition()
+    private val inputQueue = ArrayDeque<QueuedInput>()
+    private val controlWriteLock = Any()
 
     fun run() {
         try {
@@ -46,11 +57,17 @@ class StreamClient(
             if (ack.header.type != FifProtocol.TYPE_HELLO_ACK) {
                 error("expected HelloAck, got ${ack.header.type}")
             }
+            val ackJson = JSONObject(String(ack.payload, StandardCharsets.UTF_8))
             FifLog.network(
                 "event" to "hello_ack_received",
                 "android_timestamp_ns" to ackReceivedNs,
                 "rtt_ms" to ((ackReceivedNs - helloSentNs) / 1_000_000.0)
             )
+            if (ackJson.optJSONObject("input")?.optBoolean("touch", false) == true) {
+                startInputSender(control)
+            } else {
+                FifLog.network("event" to "touch_unavailable")
+            }
 
             listener.onStatus("Connecting video")
             FifLog.network("event" to "connect_start", "port" to videoPort)
@@ -72,6 +89,45 @@ class StreamClient(
         cleanup()
     }
 
+    fun sendTouchFrame(frame: FifProtocol.TouchFrame): Boolean {
+        if (!running || !inputReady) {
+            return false
+        }
+        val queued = QueuedInput(
+            payload = FifProtocol.encodeTouchFrame(frame),
+            moveOnly = frame.isMoveOnly
+        )
+        var overflow = false
+        inputLock.withLock {
+            if (!inputReady) {
+                return false
+            }
+            if (queued.moveOnly && inputQueue.peekLast()?.moveOnly == true) {
+                inputQueue.removeLast()
+            }
+            if (inputQueue.size >= MAX_INPUT_QUEUE_SIZE) {
+                val iterator = inputQueue.iterator()
+                while (iterator.hasNext()) {
+                    if (iterator.next().moveOnly) {
+                        iterator.remove()
+                        break
+                    }
+                }
+            }
+            if (inputQueue.size >= MAX_INPUT_QUEUE_SIZE) {
+                overflow = true
+            } else {
+                inputQueue.addLast(queued)
+                inputAvailable.signal()
+            }
+        }
+        if (overflow) {
+            FifLog.network("event" to "touch_queue_overflow")
+            failInputConnection()
+        }
+        return true
+    }
+
     private fun connect(port: Int): Socket =
         Socket().apply {
             tcpNoDelay = true
@@ -81,11 +137,64 @@ class StreamClient(
 
     private fun sendHello(socket: Socket): Long {
         val payload = """
-            {"role":"android-client","protocol":1,"appVersion":"${BuildConfig.VERSION_NAME}","screen":{"width":1280,"height":720,"refreshHz":60},"decoders":[{"codec":"video/avc","lowLatency":true}]}
+            {"role":"android-client","protocol":1,"appVersion":"${BuildConfig.VERSION_NAME}","screen":{"width":1280,"height":720,"refreshHz":60},"decoders":[{"codec":"video/avc","lowLatency":true}],"input":{"touch":true,"maxContacts":${FifProtocol.MAX_TOUCH_CONTACTS}}}
         """.trimIndent().toByteArray(StandardCharsets.UTF_8)
         val timestampNs = System.nanoTime()
         FifProtocol.writePacket(socket.getOutputStream(), FifProtocol.TYPE_HELLO, 1, 0, payload)
         return timestampNs
+    }
+
+    private fun startInputSender(socket: Socket) {
+        inputReady = true
+        inputThread = Thread({ runInputSender(socket) }, "fifscreen-touch-sender").apply {
+            isDaemon = true
+            start()
+        }
+        FifLog.network("event" to "touch_sender_ready")
+    }
+
+    private fun runInputSender(socket: Socket) {
+        try {
+            val output = socket.getOutputStream()
+            while (running) {
+                val queued = inputLock.withLock {
+                    while (running && inputQueue.isEmpty()) {
+                        inputAvailable.await()
+                    }
+                    if (!running) null else inputQueue.removeFirst()
+                } ?: break
+                synchronized(controlWriteLock) {
+                    FifProtocol.writePacket(
+                        output,
+                        FifProtocol.TYPE_INPUT_EVENT,
+                        inputSequence.getAndIncrement(),
+                        0,
+                        queued.payload
+                    )
+                }
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } catch (e: Exception) {
+            if (running) {
+                FifLog.network("event" to "touch_sender_error", "message" to e.message)
+                failInputConnection()
+            }
+        }
+    }
+
+    private fun failInputConnection() {
+        running = false
+        inputReady = false
+        try {
+            controlSocket?.close()
+        } catch (_: Exception) {
+        }
+        try {
+            videoSocket?.close()
+        } catch (_: Exception) {
+        }
+        inputLock.withLock { inputAvailable.signalAll() }
     }
 
     private fun readVideoLoop(socket: Socket) {
@@ -215,8 +324,14 @@ class StreamClient(
         }
     }
 
+    @Synchronized
     private fun cleanup() {
         FifLog.network("event" to "cleanup")
+        inputReady = false
+        inputLock.withLock {
+            inputQueue.clear()
+            inputAvailable.signalAll()
+        }
         try {
             controlSocket?.close()
         } catch (_: Exception) {
@@ -225,11 +340,27 @@ class StreamClient(
             videoSocket?.close()
         } catch (_: Exception) {
         }
+        val sender = inputThread
+        inputThread = null
+        sender?.interrupt()
+        if (sender != null && sender !== Thread.currentThread()) {
+            try {
+                sender.join(250)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
         decoder?.stop()
         dirtyRawRenderer = null
         rawRenderer = null
         controlSocket = null
         videoSocket = null
         decoder = null
+    }
+
+    private data class QueuedInput(val payload: ByteArray, val moveOnly: Boolean)
+
+    private companion object {
+        const val MAX_INPUT_QUEUE_SIZE = 64
     }
 }

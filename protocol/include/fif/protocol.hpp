@@ -17,6 +17,12 @@ inline constexpr std::uint16_t kProtocolVersion = 1;
 inline constexpr std::size_t kHeaderSize = 32;
 inline constexpr std::uint32_t kMaxControlPayload = 1u * 1024u * 1024u;
 inline constexpr std::uint32_t kMaxVideoPayload = 16u * 1024u * 1024u;
+inline constexpr std::uint8_t kInputPayloadVersion = 1;
+inline constexpr std::size_t kMaxTouchContacts = 16;
+inline constexpr std::size_t kTouchFrameHeaderSize = 4;
+inline constexpr std::size_t kTouchContactSize = 14;
+inline constexpr std::uint16_t kMaxTouchPointerId = 256;
+inline constexpr std::uint16_t kMaxTouchPressure = 1024;
 
 enum class MessageType : std::uint16_t {
   Hello = 1,
@@ -41,6 +47,17 @@ enum PacketFlags : std::uint32_t {
   kFlagDroppedBefore = 1u << 2,
 };
 
+enum class InputEventKind : std::uint8_t {
+  TouchFrame = 1,
+};
+
+enum class TouchPhase : std::uint8_t {
+  Down = 1,
+  Move = 2,
+  Up = 3,
+  Cancel = 4,
+};
+
 struct PacketHeader {
   std::uint16_t version = kProtocolVersion;
   MessageType type = MessageType::Error;
@@ -53,6 +70,20 @@ struct PacketHeader {
 struct Packet {
   PacketHeader header;
   std::vector<std::uint8_t> payload;
+};
+
+struct TouchContact {
+  std::uint16_t pointer_id = 0;
+  TouchPhase phase = TouchPhase::Move;
+  std::uint16_t x = 0;
+  std::uint16_t y = 0;
+  std::uint16_t pressure = 0;
+  std::uint16_t major = 0;
+  std::uint16_t minor = 0;
+};
+
+struct TouchFrame {
+  std::vector<TouchContact> contacts;
 };
 
 inline std::uint64_t monotonic_now_ns() {
@@ -97,6 +128,95 @@ inline std::uint64_t read_u64_le(const std::uint8_t* in) {
     value |= static_cast<std::uint64_t>(in[i]) << (8u * i);
   }
   return value;
+}
+
+inline bool is_valid_touch_phase(TouchPhase phase) {
+  switch (phase) {
+    case TouchPhase::Down:
+    case TouchPhase::Move:
+    case TouchPhase::Up:
+    case TouchPhase::Cancel:
+      return true;
+  }
+  return false;
+}
+
+inline std::vector<std::uint8_t> encode_touch_frame(const TouchFrame& frame) {
+  if (frame.contacts.empty() || frame.contacts.size() > kMaxTouchContacts) {
+    throw std::runtime_error("invalid touch contact count");
+  }
+
+  std::vector<std::uint8_t> out(
+      kTouchFrameHeaderSize + frame.contacts.size() * kTouchContactSize, 0);
+  out[0] = static_cast<std::uint8_t>(InputEventKind::TouchFrame);
+  out[1] = kInputPayloadVersion;
+  out[2] = static_cast<std::uint8_t>(frame.contacts.size());
+
+  for (std::size_t i = 0; i < frame.contacts.size(); ++i) {
+    const auto& contact = frame.contacts[i];
+    if (contact.pointer_id == 0 || contact.pointer_id > kMaxTouchPointerId ||
+        !is_valid_touch_phase(contact.phase) || contact.pressure > kMaxTouchPressure) {
+      throw std::runtime_error("invalid touch contact");
+    }
+    for (std::size_t previous = 0; previous < i; ++previous) {
+      if (frame.contacts[previous].pointer_id == contact.pointer_id) {
+        throw std::runtime_error("duplicate touch pointer id");
+      }
+    }
+
+    auto* encoded = out.data() + kTouchFrameHeaderSize + i * kTouchContactSize;
+    write_u16_le(encoded, contact.pointer_id);
+    encoded[2] = static_cast<std::uint8_t>(contact.phase);
+    write_u16_le(encoded + 4, contact.x);
+    write_u16_le(encoded + 6, contact.y);
+    write_u16_le(encoded + 8, contact.pressure);
+    write_u16_le(encoded + 10, contact.major);
+    write_u16_le(encoded + 12, contact.minor);
+  }
+  return out;
+}
+
+inline TouchFrame decode_touch_frame(const std::vector<std::uint8_t>& payload) {
+  if (payload.size() < kTouchFrameHeaderSize ||
+      payload[0] != static_cast<std::uint8_t>(InputEventKind::TouchFrame) ||
+      payload[1] != kInputPayloadVersion || payload[3] != 0) {
+    throw std::runtime_error("invalid touch frame header");
+  }
+
+  const std::size_t count = payload[2];
+  if (count == 0 || count > kMaxTouchContacts ||
+      payload.size() != kTouchFrameHeaderSize + count * kTouchContactSize) {
+    throw std::runtime_error("invalid touch frame length");
+  }
+
+  TouchFrame frame;
+  frame.contacts.reserve(count);
+  for (std::size_t i = 0; i < count; ++i) {
+    const auto* encoded = payload.data() + kTouchFrameHeaderSize + i * kTouchContactSize;
+    if (encoded[3] != 0) {
+      throw std::runtime_error("invalid touch contact reserved byte");
+    }
+
+    TouchContact contact;
+    contact.pointer_id = read_u16_le(encoded);
+    contact.phase = static_cast<TouchPhase>(encoded[2]);
+    contact.x = read_u16_le(encoded + 4);
+    contact.y = read_u16_le(encoded + 6);
+    contact.pressure = read_u16_le(encoded + 8);
+    contact.major = read_u16_le(encoded + 10);
+    contact.minor = read_u16_le(encoded + 12);
+    if (contact.pointer_id == 0 || contact.pointer_id > kMaxTouchPointerId ||
+        !is_valid_touch_phase(contact.phase) || contact.pressure > kMaxTouchPressure) {
+      throw std::runtime_error("invalid touch contact");
+    }
+    for (const auto& previous : frame.contacts) {
+      if (previous.pointer_id == contact.pointer_id) {
+        throw std::runtime_error("duplicate touch pointer id");
+      }
+    }
+    frame.contacts.push_back(contact);
+  }
+  return frame;
 }
 
 inline std::array<std::uint8_t, kHeaderSize> encode_header(const PacketHeader& header) {
@@ -193,4 +313,3 @@ class PacketReader {
 };
 
 }  // namespace fif
-

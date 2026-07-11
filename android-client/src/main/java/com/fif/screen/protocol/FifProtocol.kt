@@ -21,6 +21,15 @@ object FifProtocol {
     const val TYPE_REQUEST_IDR = 8
     const val TYPE_VIDEO_CONFIG = 100
     const val TYPE_VIDEO_FRAME = 101
+    const val TYPE_INPUT_EVENT = 200
+
+    const val INPUT_KIND_TOUCH_FRAME = 1
+    const val INPUT_PAYLOAD_VERSION = 1
+    const val MAX_TOUCH_CONTACTS = 16
+    const val TOUCH_FRAME_HEADER_SIZE = 4
+    const val TOUCH_CONTACT_SIZE = 14
+    const val MAX_TOUCH_POINTER_ID = 256
+    const val MAX_TOUCH_PRESSURE = 1024
 
     const val FLAG_CODEC_CONFIG = 1
     const val FLAG_IDR_FRAME = 1 shl 1
@@ -36,6 +45,64 @@ object FifProtocol {
     )
 
     data class Packet(val header: Header, val payload: ByteArray)
+
+    enum class TouchPhase(val wireValue: Int) {
+        DOWN(1),
+        MOVE(2),
+        UP(3),
+        CANCEL(4)
+    }
+
+    data class TouchContact(
+        val pointerId: Int,
+        val phase: TouchPhase,
+        val x: Int,
+        val y: Int,
+        val pressure: Int,
+        val major: Int,
+        val minor: Int
+    )
+
+    data class TouchFrame(val contacts: List<TouchContact>) {
+        val isMoveOnly: Boolean
+            get() = contacts.all { it.phase == TouchPhase.MOVE }
+    }
+
+    fun encodeTouchFrame(frame: TouchFrame): ByteArray {
+        require(frame.contacts.isNotEmpty() && frame.contacts.size <= MAX_TOUCH_CONTACTS) {
+            "invalid touch contact count"
+        }
+        require(frame.contacts.map { it.pointerId }.distinct().size == frame.contacts.size) {
+            "duplicate touch pointer id"
+        }
+
+        val buffer = ByteBuffer.allocate(
+            TOUCH_FRAME_HEADER_SIZE + frame.contacts.size * TOUCH_CONTACT_SIZE
+        ).order(ByteOrder.LITTLE_ENDIAN)
+        buffer.put(INPUT_KIND_TOUCH_FRAME.toByte())
+        buffer.put(INPUT_PAYLOAD_VERSION.toByte())
+        buffer.put(frame.contacts.size.toByte())
+        buffer.put(0)
+        frame.contacts.forEach { contact ->
+            require(contact.pointerId in 1..MAX_TOUCH_POINTER_ID) { "invalid touch pointer id" }
+            require(contact.x in 0..0xffff && contact.y in 0..0xffff) {
+                "invalid touch coordinates"
+            }
+            require(contact.pressure in 0..MAX_TOUCH_PRESSURE) { "invalid touch pressure" }
+            require(contact.major in 0..0xffff && contact.minor in 0..0xffff) {
+                "invalid touch contact size"
+            }
+            buffer.putShort(contact.pointerId.toShort())
+            buffer.put(contact.phase.wireValue.toByte())
+            buffer.put(0)
+            buffer.putShort(contact.x.toShort())
+            buffer.putShort(contact.y.toShort())
+            buffer.putShort(contact.pressure.toShort())
+            buffer.putShort(contact.major.toShort())
+            buffer.putShort(contact.minor.toShort())
+        }
+        return buffer.array()
+    }
 
     fun readPacket(input: InputStream, maxPayload: Int): Packet {
         val headerBytes = readExact(input, HEADER_SIZE)
@@ -94,4 +161,3 @@ object FifProtocol {
 }
 
 class ProtocolException(message: String) : Exception(message)
-

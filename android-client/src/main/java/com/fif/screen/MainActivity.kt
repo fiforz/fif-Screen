@@ -17,6 +17,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import com.fif.screen.diagnostics.FifLog
 import com.fif.screen.diagnostics.H264CapabilityLogger
+import com.fif.screen.input.TouchInputMapper
 import com.fif.screen.net.StreamClient
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -65,6 +66,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
         surfaceView = SurfaceView(this)
         surfaceView.holder.addCallback(this)
+        surfaceView.isClickable = true
+        surfaceView.setOnTouchListener { view, event ->
+            val frame = TouchInputMapper.fromMotionEvent(event, view.width, view.height)
+            frame != null && client?.sendTouchFrame(frame) == true
+        }
 
         statusView = TextView(this).apply {
             setTextColor(Color.WHITE)

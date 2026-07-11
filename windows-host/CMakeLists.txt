@@ -4,6 +4,7 @@ add_executable(fif-host
   src/main.cpp
   src/mf_h264_encoder.cpp
   src/screen_capture.cpp
+  src/touch_injector.cpp
   src/win32_socket.cpp
 )
 
@@ -26,6 +27,7 @@ target_include_directories(fif-host PRIVATE
 target_link_libraries(fif-host PRIVATE fif_protocol)
 
 if(WIN32)
+  target_compile_definitions(fif-host PRIVATE _WIN32_WINNT=0x0A00 WINVER=0x0A00)
   target_link_libraries(fif-host PRIVATE
     Ws2_32 User32 Gdi32 Gdiplus Winmm
     Mf Mfplat Mfuuid Wmcodecdspuuid Ole32

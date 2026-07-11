@@ -120,6 +120,48 @@ void test_rejects_large_payload() {
   assert(rejected);
 }
 
+void test_touch_frame_round_trip() {
+  fif::TouchFrame frame;
+  frame.contacts.push_back(
+      {1, fif::TouchPhase::Down, 0, 65535, 768, 2048, 1024});
+  frame.contacts.push_back(
+      {2, fif::TouchPhase::Move, 32768, 16384, 512, 0, 0});
+
+  const auto encoded = fif::encode_touch_frame(frame);
+  assert(encoded.size() == fif::kTouchFrameHeaderSize + 2 * fif::kTouchContactSize);
+  const auto decoded = fif::decode_touch_frame(encoded);
+  assert(decoded.contacts.size() == 2);
+  assert(decoded.contacts[0].pointer_id == 1);
+  assert(decoded.contacts[0].phase == fif::TouchPhase::Down);
+  assert(decoded.contacts[0].y == 65535);
+  assert(decoded.contacts[0].pressure == 768);
+  assert(decoded.contacts[0].major == 2048);
+  assert(decoded.contacts[1].pointer_id == 2);
+  assert(decoded.contacts[1].phase == fif::TouchPhase::Move);
+  assert(decoded.contacts[1].x == 32768);
+}
+
+void test_rejects_invalid_touch_frame() {
+  fif::TouchFrame frame;
+  frame.contacts.push_back(
+      {1, fif::TouchPhase::Down, 100, 200, 512, 1000, 800});
+  frame.contacts.push_back(
+      {2, fif::TouchPhase::Move, 300, 400, 512, 1000, 800});
+  auto encoded = fif::encode_touch_frame(frame);
+  const std::size_t second_contact =
+      fif::kTouchFrameHeaderSize + fif::kTouchContactSize;
+  encoded[second_contact] = 1;
+  encoded[second_contact + 1] = 0;
+
+  bool rejected = false;
+  try {
+    (void)fif::decode_touch_frame(encoded);
+  } catch (const std::runtime_error&) {
+    rejected = true;
+  }
+  assert(rejected);
+}
+
 }  // namespace
 
 int main() {
@@ -127,6 +169,8 @@ int main() {
   test_partial_packet();
   test_coalesced_packets();
   test_rejects_large_payload();
+  test_touch_frame_round_trip();
+  test_rejects_invalid_touch_frame();
   std::cout << "protocol tests passed\n";
   return 0;
 }

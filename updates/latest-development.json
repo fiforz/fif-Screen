@@ -2,12 +2,12 @@
     "schemaVersion":  1,
     "product":  "FifScreen",
     "channel":  "development",
-    "version":  "0.3.2",
+    "version":  "0.4.0",
     "architecture":  "x64",
-    "publishedAt":  "2026-07-10T13:20:08.8825730Z",
-    "releaseNotes":  "# FifScreen 0.3.2\n\n本版本修复 Windows PowerShell 5.1 读取 GitHub Release 静态更新清单时的兼容性问题。\n\n## 更新内容\n\n- GitHub Release API 暂时不可用时，继续回退到最新 Release 的静态更新清单；\n- 对 `application/octet-stream` 返回的清单内容显式执行 UTF-8 解码，不再把字节数组误当成 JSON 对象；\n- 静态清单解析完成后继续校验产品、更新通道、架构、版本、安装包地址和 SHA-256；\n- 更新检查显式启用 TLS 1.2，并关闭 PowerShell 下载进度渲染，降低请求阻塞概率；\n- 增加二进制静态清单解析的自动回归测试。\n\n## 安装说明\n\n这是开发预览版，包含测试签名显示驱动。Windows 必须已允许测试签名驱动，安装程序不会修改 BCD 或安全启动设置。\n",
-    "installerName":  "FifScreen-Setup-0.3.2-dev-x64.exe",
-    "installerUrl":  "https://github.com/fiforz/fif-Screen/releases/download/v0.3.2/FifScreen-Setup-0.3.2-dev-x64.exe",
-    "sha256":  "6331A2C090AAE37EB4E17095CFE6CCD7F0D16B6656C2808957523EFB1A6B4F92",
-    "releaseUrl":  "https://github.com/fiforz/fif-Screen/releases/tag/v0.3.2"
+    "publishedAt":  "2026-07-11T01:58:26.7196411Z",
+    "releaseNotes":  "# FifScreen 0.4.0\n\n本版本为 Android 扩展屏加入 Windows 原生多点触控。\n\n## 更新内容\n\n- 在手机或平板画面上直接点击、拖动和长按 Windows 扩展桌面；\n- 支持最多 16 个触点，双指缩放和滚动由目标 Windows 应用原生处理；\n- 触控不会强制移动系统鼠标，鼠标和触控可以独立使用；\n- Android 使用独立低延迟发送线程，并合并连续移动帧，避免输入积压；\n- Windows 将归一化触点坐标映射到 FifScreen 扩展显示器并调用系统触控注入；\n- 新旧组件通过握手协商触控能力，旧版本仍可继续显示画面；\n- USB 或控制连接断开时自动取消活动触点，避免残留按下状态；\n- 增加协议、坐标映射、单指、多指和断线取消自动测试。\n\n## 安装说明\n\n这是开发预览版，包含测试签名显示驱动。Windows 必须已允许测试签名驱动，安装程序不会修改 BCD 或安全启动设置。\n",
+    "installerName":  "FifScreen-Setup-0.4.0-dev-x64.exe",
+    "installerUrl":  "https://github.com/fiforz/fif-Screen/releases/download/v0.4.0/FifScreen-Setup-0.4.0-dev-x64.exe",
+    "sha256":  "CF931E52D93A1C7DC83E2918A262B4522C72AB4865CAC4FC804066F3D0DE6424",
+    "releaseUrl":  "https://github.com/fiforz/fif-Screen/releases/tag/v0.4.0"
 }

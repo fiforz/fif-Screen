@@ -87,6 +87,66 @@ class FifProtocolTest {
         assertArrayEquals(payload, packet.payload)
     }
 
+    @Test
+    fun touchFrameEncodesLittleEndian() {
+        val payload = FifProtocol.encodeTouchFrame(
+            FifProtocol.TouchFrame(
+                listOf(
+                    FifProtocol.TouchContact(
+                        pointerId = 1,
+                        phase = FifProtocol.TouchPhase.DOWN,
+                        x = 0,
+                        y = 65535,
+                        pressure = 768,
+                        major = 2048,
+                        minor = 1024
+                    ),
+                    FifProtocol.TouchContact(
+                        pointerId = 2,
+                        phase = FifProtocol.TouchPhase.MOVE,
+                        x = 32768,
+                        y = 16384,
+                        pressure = 512,
+                        major = 0,
+                        minor = 0
+                    )
+                )
+            )
+        )
+
+        val buffer = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
+        assertEquals(FifProtocol.INPUT_KIND_TOUCH_FRAME, buffer.get().toInt())
+        assertEquals(FifProtocol.INPUT_PAYLOAD_VERSION, buffer.get().toInt())
+        assertEquals(2, buffer.get().toInt())
+        buffer.get()
+        assertEquals(1, buffer.short.toInt())
+        assertEquals(FifProtocol.TouchPhase.DOWN.wireValue, buffer.get().toInt())
+        buffer.get()
+        assertEquals(0, buffer.short.toInt())
+        assertEquals(65535, buffer.short.toInt() and 0xffff)
+        assertEquals(768, buffer.short.toInt())
+        assertEquals(2048, buffer.short.toInt())
+        assertEquals(1024, buffer.short.toInt())
+        assertEquals(2, buffer.short.toInt())
+        assertEquals(FifProtocol.TouchPhase.MOVE.wireValue, buffer.get().toInt())
+    }
+
+    @Test
+    fun duplicateTouchPointerIdIsRejected() {
+        val contact = FifProtocol.TouchContact(
+            pointerId = 1,
+            phase = FifProtocol.TouchPhase.DOWN,
+            x = 1,
+            y = 1,
+            pressure = 1,
+            major = 1,
+            minor = 1
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            FifProtocol.encodeTouchFrame(FifProtocol.TouchFrame(listOf(contact, contact)))
+        }
+    }
+
     private fun readVector(file: String, maxPayload: Int = FifProtocol.MAX_CONTROL_PAYLOAD): FifProtocol.Packet =
         FifProtocol.readPacket(ByteArrayInputStream(vectorBytes(file)), maxPayload)
 
@@ -125,4 +185,3 @@ class FifProtocolTest {
         }
     }
 }
-

@@ -5,6 +5,7 @@
 #include "mf_h264_encoder.hpp"
 #include "win32_socket.hpp"
 #include "screen_capture.hpp"
+#include "touch_injector.hpp"
 
 #include <fif/protocol.hpp>
 
@@ -235,7 +236,9 @@ std::string make_hello_ack_json(std::uint16_t control_port, std::uint16_t video_
        << ",\"selectedMode\":{\"width\":" << mode.width
        << ",\"height\":" << mode.height
        << ",\"refreshHz\":" << mode.fps << "}"
-       << ",\"codec\":{\"mime\":\"video/avc\",\"lowLatency\":true}}";
+       << ",\"codec\":{\"mime\":\"video/avc\",\"lowLatency\":true}"
+       << ",\"input\":{\"touch\":true,\"maxContacts\":"
+       << kMaxTouchContacts << "}}";
   return json.str();
 }
 
@@ -614,11 +617,13 @@ void HostServer::run_control_channel() {
   server.listen();
 
   std::uint64_t sequence = 1;
+  TouchInjector touch_injector;
 
   for (;;) {
     std::cout << "waiting for Android control client\n";
     Socket client = server.accept_one();
     std::cout << "control client connected\n";
+    auto touch_target = find_fifscreen_display();
 
     fif::PacketReader reader(fif::kMaxControlPayload);
     const auto hello_ack = make_packet(
@@ -661,6 +666,18 @@ void HostServer::run_control_channel() {
             case fif::MessageType::RequestIdr:
               std::cout << "Android requested IDR frame\n";
               break;
+            case fif::MessageType::InputEvent: {
+              if (!touch_target) {
+                touch_target = find_fifscreen_display();
+              }
+              if (!touch_target) {
+                std::cerr << "FIFSCREEN_HOST event=touch_ignored reason=display_not_found\n";
+                break;
+              }
+              const auto frame = fif::decode_touch_frame(packet->payload);
+              (void)touch_injector.inject(frame, *touch_target);
+              break;
+            }
             default:
               std::cout << "control packet type="
                         << static_cast<std::uint16_t>(packet->header.type)
@@ -673,6 +690,7 @@ void HostServer::run_control_channel() {
         client.close();
       }
     }
+    touch_injector.cancel_active();
   }
 }
 
