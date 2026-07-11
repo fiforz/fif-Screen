@@ -58,12 +58,14 @@ class StreamClient(
                 error("expected HelloAck, got ${ack.header.type}")
             }
             val ackJson = JSONObject(String(ack.payload, StandardCharsets.UTF_8))
+            val touchEnabled = ackJson.optJSONObject("input")?.optBoolean("touch", false) == true
             FifLog.network(
                 "event" to "hello_ack_received",
                 "android_timestamp_ns" to ackReceivedNs,
-                "rtt_ms" to ((ackReceivedNs - helloSentNs) / 1_000_000.0)
+                "rtt_ms" to ((ackReceivedNs - helloSentNs) / 1_000_000.0),
+                "touch" to touchEnabled
             )
-            if (ackJson.optJSONObject("input")?.optBoolean("touch", false) == true) {
+            if (touchEnabled) {
                 startInputSender(control)
             } else {
                 FifLog.network("event" to "touch_unavailable")
@@ -91,6 +93,13 @@ class StreamClient(
 
     fun sendTouchFrame(frame: FifProtocol.TouchFrame): Boolean {
         if (!running || !inputReady) {
+            if (!frame.isMoveOnly) {
+                FifLog.input(
+                    "event" to "touch_not_ready",
+                    "running" to running,
+                    "input_ready" to inputReady
+                )
+            }
             return false
         }
         val queued = QueuedInput(

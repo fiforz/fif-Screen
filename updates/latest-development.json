@@ -2,12 +2,12 @@
     "schemaVersion":  1,
     "product":  "FifScreen",
     "channel":  "development",
-    "version":  "0.4.0",
+    "version":  "0.4.1",
     "architecture":  "x64",
-    "publishedAt":  "2026-07-11T01:58:26.7196411Z",
-    "releaseNotes":  "# FifScreen 0.4.0\n\n本版本为 Android 扩展屏加入 Windows 原生多点触控。\n\n## 更新内容\n\n- 在手机或平板画面上直接点击、拖动和长按 Windows 扩展桌面；\n- 支持最多 16 个触点，双指缩放和滚动由目标 Windows 应用原生处理；\n- 触控不会强制移动系统鼠标，鼠标和触控可以独立使用；\n- Android 使用独立低延迟发送线程，并合并连续移动帧，避免输入积压；\n- Windows 将归一化触点坐标映射到 FifScreen 扩展显示器并调用系统触控注入；\n- 新旧组件通过握手协商触控能力，旧版本仍可继续显示画面；\n- USB 或控制连接断开时自动取消活动触点，避免残留按下状态；\n- 增加协议、坐标映射、单指、多指和断线取消自动测试。\n\n## 安装说明\n\n这是开发预览版，包含测试签名显示驱动。Windows 必须已允许测试签名驱动，安装程序不会修改 BCD 或安全启动设置。\n",
-    "installerName":  "FifScreen-Setup-0.4.0-dev-x64.exe",
-    "installerUrl":  "https://github.com/fiforz/fif-Screen/releases/download/v0.4.0/FifScreen-Setup-0.4.0-dev-x64.exe",
-    "sha256":  "CF931E52D93A1C7DC83E2918A262B4522C72AB4865CAC4FC804066F3D0DE6424",
-    "releaseUrl":  "https://github.com/fiforz/fif-Screen/releases/tag/v0.4.0"
+    "publishedAt":  "2026-07-11T02:25:56.5619163Z",
+    "releaseNotes":  "# FifScreen 0.4.1\n\n本版本修复 Android 画面可以显示、但触摸 Windows 扩展桌面无响应的问题。\n\n## 更新内容\n\n- 控制中心会校验 Windows 主机和设备启动器版本，避免误启动旧构建产物；\n- 发现旧主机时只替换主机进程，保留已存在的扩展显示设备和 Owner 进程；\n- Android 端始终消费完整触摸手势，避免连接状态切换时丢失移动或抬起；\n- 增加触摸能力协商、输入就绪和发送结果日志，便于定位不同 Android 设备的问题；\n- 已在真实 Android 设备和 1920 x 1080 FifScreen 扩展屏上验证点击可产生 Windows 原生 `WM_POINTERDOWN/UP`，并兼容普通鼠标点击消息。\n\n## 安装说明\n\n这是开发预览版，包含测试签名显示驱动。Windows 必须已允许测试签名驱动，安装程序不会修改 BCD 或安全启动设置。\n",
+    "installerName":  "FifScreen-Setup-0.4.1-dev-x64.exe",
+    "installerUrl":  "https://github.com/fiforz/fif-Screen/releases/download/v0.4.1/FifScreen-Setup-0.4.1-dev-x64.exe",
+    "sha256":  "8DC898282F6F181F373DDC5CE887F6142E8340A55D80014631E469023C2390C3",
+    "releaseUrl":  "https://github.com/fiforz/fif-Screen/releases/tag/v0.4.1"
 }

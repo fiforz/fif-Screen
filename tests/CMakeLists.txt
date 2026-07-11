@@ -1,5 +1,6 @@
 add_executable(fif-protocol-test protocol_frame_test.cpp)
 target_link_libraries(fif-protocol-test PRIVATE fif_protocol)
+add_test(NAME fif-protocol-test COMMAND fif-protocol-test)
 
 if(WIN32)
   add_executable(fif-touch-injector-test
@@ -14,4 +15,5 @@ if(WIN32)
     WINVER=0x0A00
   )
   target_link_libraries(fif-touch-injector-test PRIVATE fif_protocol User32)
+  add_test(NAME fif-touch-injector-test COMMAND fif-touch-injector-test)
 endif()

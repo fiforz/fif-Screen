@@ -6,6 +6,7 @@ object FifLog {
     fun device(vararg pairs: Pair<String, Any?>) = write("FIFSCREEN_DEVICE", pairs)
     fun display(vararg pairs: Pair<String, Any?>) = write("FIFSCREEN_DISPLAY", pairs)
     fun decoder(vararg pairs: Pair<String, Any?>) = write("FIFSCREEN_DECODER", pairs)
+    fun input(vararg pairs: Pair<String, Any?>) = write("FIFSCREEN_INPUT", pairs)
     fun network(vararg pairs: Pair<String, Any?>) = write("FIFSCREEN_NETWORK", pairs)
     fun surface(vararg pairs: Pair<String, Any?>) = write("FIFSCREEN_SURFACE", pairs)
 

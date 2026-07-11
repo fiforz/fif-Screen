@@ -25,6 +25,47 @@ if ($Action -eq 'Gui' -and -not (Test-IsAdministrator)) {
 }
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
+$VersionPath = Join-Path $RepoRoot 'VERSION'
+$AppVersion = if (Test-Path $VersionPath) {
+    (Get-Content -LiteralPath $VersionPath -Raw).Trim()
+} else {
+    'unknown'
+}
+
+function Test-ExecutableVersion {
+    param(
+        [string]$Path,
+        [string]$ExpectedVersion
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $false
+    }
+    if ($ExpectedVersion -eq 'unknown') {
+        return $true
+    }
+    try {
+        $actual = [version]([Diagnostics.FileVersionInfo]::GetVersionInfo($Path).FileVersion.Trim())
+        $expected = [version]$ExpectedVersion
+        return $actual.Major -eq $expected.Major -and
+            $actual.Minor -eq $expected.Minor -and
+            $actual.Build -eq $expected.Build
+    } catch {
+        return $false
+    }
+}
+
+function Select-VersionedExecutable {
+    param([string[]]$Candidates)
+
+    foreach ($candidate in $Candidates) {
+        if (Test-ExecutableVersion -Path $candidate -ExpectedVersion $AppVersion) {
+            return $candidate
+        }
+    }
+    return $Candidates[0]
+}
+
 $RuntimeRoot = Join-Path $RepoRoot 'runtime'
 $InstalledLayout = Test-Path (Join-Path $RuntimeRoot 'bin\fif-host.exe')
 
@@ -38,18 +79,20 @@ if ($InstalledLayout) {
 } else {
     $AdbPath = Join-Path $RepoRoot 'tools\android-sdk\platform-tools\adb.exe'
     $ApkPath = Join-Path $RepoRoot 'android-client\build\outputs\apk\debug\android-client-debug.apk'
-    $HostPath = Join-Path $RepoRoot 'build\host\windows-host\fif-host.exe'
-    $LauncherPath = Join-Path $RepoRoot 'build\stage-driver-gate-clean\windows-driver\FifIddDeviceLauncher\fif-idd-device-launcher.exe'
+    $HostPath = Select-VersionedExecutable -Candidates @(
+        (Join-Path $RepoRoot 'build\installer-release\windows-host\fif-host.exe'),
+        (Join-Path $RepoRoot "artifacts\installer\stage-$AppVersion-development\runtime\bin\fif-host.exe"),
+        (Join-Path $RepoRoot 'build\host\windows-host\fif-host.exe')
+    )
+    $LauncherPath = Select-VersionedExecutable -Candidates @(
+        (Join-Path $RepoRoot 'build\installer-release\windows-driver\FifIddDeviceLauncher\fif-idd-device-launcher.exe'),
+        (Join-Path $RepoRoot "artifacts\installer\stage-$AppVersion-development\runtime\bin\fif-idd-device-launcher.exe"),
+        (Join-Path $RepoRoot 'build\stage-driver-gate-clean\windows-driver\FifIddDeviceLauncher\fif-idd-device-launcher.exe')
+    )
     $UpdateScriptPath = Join-Path $RepoRoot 'packaging\scripts\check-update.ps1'
     $ArtifactDir = Join-Path $RepoRoot 'artifacts\control-panel'
 }
 
-$VersionPath = Join-Path $RepoRoot 'VERSION'
-$AppVersion = if (Test-Path $VersionPath) {
-    (Get-Content -LiteralPath $VersionPath -Raw).Trim()
-} else {
-    'unknown'
-}
 $BundledAndroidVersionCode = 0
 if ($InstalledLayout) {
     $RuntimeManifestPath = Join-Path $RuntimeRoot 'manifest.json'
@@ -311,14 +354,35 @@ function Get-LauncherStatus {
 
 function Ensure-Host {
     param([string]$Serial)
-    $existing = Get-Process fif-host -ErrorAction SilentlyContinue
+    $existing = @(Get-Process fif-host -ErrorAction SilentlyContinue)
     if ($existing) {
-        Add-Log "Windows 主机服务已运行：PID $($existing[0].Id)"
-        return
+        $matching = @($existing | Where-Object {
+            try {
+                Test-ExecutableVersion -Path $_.Path -ExpectedVersion $AppVersion
+            } catch {
+                $false
+            }
+        })
+        if ($matching) {
+            Add-Log "Windows 主机服务已运行：PID $($matching[0].Id) | 版本 $AppVersion"
+            return
+        }
+        Add-Log '检测到旧版 Windows 主机，正在仅重启主机服务'
+        $existing | Stop-Process -Force
+        for ($attempt = 0; $attempt -lt 20; $attempt++) {
+            if (-not (Get-Process fif-host -ErrorAction SilentlyContinue)) {
+                break
+            }
+            Start-Sleep -Milliseconds 100
+        }
     }
 
     if (-not (Test-Path $HostPath)) {
         Add-Log "找不到 Windows 主机程序：$HostPath"
+        return
+    }
+    if (-not (Test-ExecutableVersion -Path $HostPath -ExpectedVersion $AppVersion)) {
+        Add-Log "Windows 主机版本与控制中心不匹配：需要 $AppVersion | 路径 $HostPath"
         return
     }
 

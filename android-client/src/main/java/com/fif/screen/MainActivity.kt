@@ -69,7 +69,22 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         surfaceView.isClickable = true
         surfaceView.setOnTouchListener { view, event ->
             val frame = TouchInputMapper.fromMotionEvent(event, view.width, view.height)
-            frame != null && client?.sendTouchFrame(frame) == true
+            if (frame == null) {
+                false
+            } else {
+                val sent = client?.sendTouchFrame(frame) == true
+                if (!frame.isMoveOnly || !sent) {
+                    FifLog.input(
+                        "event" to "touch_event",
+                        "action" to event.actionMasked,
+                        "contacts" to frame.contacts.size,
+                        "sent" to sent,
+                        "view_width" to view.width,
+                        "view_height" to view.height
+                    )
+                }
+                true
+            }
         }
 
         statusView = TextView(this).apply {
