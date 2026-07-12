@@ -1,5 +1,7 @@
 package com.fif.screen.net
 
+import android.net.Network
+
 enum class ConnectionMode(val preferenceValue: String) {
     USB("usb"),
     LAN("lan"),
@@ -16,7 +18,8 @@ data class ConnectionEndpoint(
     val controlPort: Int,
     val videoPort: Int,
     val mode: ConnectionMode,
-    val pairingPin: String? = null
+    val pairingPin: String? = null,
+    val network: Network? = null
 )
 
 fun interface EndpointProvider {
@@ -37,20 +40,26 @@ class UsbEndpointProvider(
 
 class LanEndpointProvider(
     private val pin: String,
-    private val discovery: LanDiscovery = LanDiscovery()
+    private val manualHost: String?,
+    private val discovery: LanDiscovery
 ) : EndpointProvider {
     init {
         require(PairingCrypto.isValidPin(pin)) { "PIN 必须是四位数字" }
     }
 
     override fun resolve(): ConnectionEndpoint {
-        val discovered = discovery.discover()
+        val discovered = if (manualHost.isNullOrBlank()) {
+            discovery.discover()
+        } else {
+            discovery.direct(manualHost)
+        }
         return ConnectionEndpoint(
             host = discovered.host,
             controlPort = discovered.controlPort,
             videoPort = discovered.videoPort,
             mode = ConnectionMode.LAN,
-            pairingPin = pin
+            pairingPin = pin,
+            network = discovered.network
         )
     }
 }

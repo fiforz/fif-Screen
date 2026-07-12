@@ -37,7 +37,7 @@ struct RawFrame {
   std::vector<std::uint8_t> rgb565;
 };
 
-std::optional<ScreenTarget> find_fifscreen_display();
+std::optional<ScreenTarget> find_fifscreen_display(bool log_candidates = true);
 std::string narrow(const std::wstring& value);
 bool save_rgba_png(const std::wstring& path, const RawFrame& frame);
 

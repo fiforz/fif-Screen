@@ -212,7 +212,7 @@ std::string narrow(const std::wstring& value) {
   return out;
 }
 
-std::optional<ScreenTarget> find_fifscreen_display() {
+std::optional<ScreenTarget> find_fifscreen_display(bool log_candidates) {
   std::vector<ScreenTarget> active;
   for (DWORD i = 0; i < 16; ++i) {
     DISPLAY_DEVICEW device{};
@@ -224,12 +224,14 @@ std::optional<ScreenTarget> find_fifscreen_display() {
       continue;
     }
     if (auto target = display_from_device(device)) {
-      std::cout << "display candidate name=" << narrow(target->device_name)
-                << " string=" << narrow(target->device_string)
-                << " id=" << narrow(target->device_id)
-                << " pos=" << target->x << "," << target->y
-                << " size=" << target->width << "x" << target->height
-                << " primary=" << (target->primary ? "true" : "false") << "\n";
+      if (log_candidates) {
+        std::cout << "display candidate name=" << narrow(target->device_name)
+                  << " string=" << narrow(target->device_string)
+                  << " id=" << narrow(target->device_id)
+                  << " pos=" << target->x << "," << target->y
+                  << " size=" << target->width << "x" << target->height
+                  << " primary=" << (target->primary ? "true" : "false") << "\n";
+      }
       active.push_back(*target);
     }
   }

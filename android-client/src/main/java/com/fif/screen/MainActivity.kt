@@ -3,6 +3,8 @@ package com.fif.screen
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
@@ -31,7 +33,9 @@ import com.fif.screen.diagnostics.H264CapabilityLogger
 import com.fif.screen.input.TouchInputMapper
 import com.fif.screen.net.ConnectionMode
 import com.fif.screen.net.EndpointProvider
+import com.fif.screen.net.LanDiscovery
 import com.fif.screen.net.LanEndpointProvider
+import com.fif.screen.net.LanHostAddress
 import com.fif.screen.net.StreamClient
 import com.fif.screen.net.UsbEndpointProvider
 import java.util.concurrent.ExecutorService
@@ -50,6 +54,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private var desiredRunning = true
     private var connectionMode = ConnectionMode.USB
     private var pairingPin: String? = null
+    private var useManualLanHost = false
+    private var manualLanHost: String? = null
     private var clientGeneration = 0L
     private var connectionDialog: AlertDialog? = null
     private var lastErrorToastNs = 0L
@@ -76,9 +82,23 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             "control_port" to 27183,
             "video_port" to 27184
         )
+        val preferences = getPreferences(Context.MODE_PRIVATE)
         connectionMode = ConnectionMode.fromPreference(
-            getPreferences(Context.MODE_PRIVATE).getString(PREF_CONNECTION_MODE, null)
+            preferences.getString(PREF_CONNECTION_MODE, null)
         )
+        requestedConnectionMode(intent)?.let { requestedMode ->
+            connectionMode = requestedMode
+            preferences.edit()
+                .putString(PREF_CONNECTION_MODE, requestedMode.preferenceValue)
+                .apply()
+            FifLog.network(
+                "event" to "transport_requested",
+                "transport" to requestedMode.preferenceValue,
+                "source" to "launch_intent"
+            )
+        }
+        useManualLanHost = preferences.getBoolean(PREF_LAN_MANUAL_HOST, false)
+        manualLanHost = preferences.getString(PREF_LAN_HOST, null)
         if (connectionMode == ConnectionMode.LAN) {
             desiredRunning = false
         }
@@ -178,6 +198,38 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         showSettingsButton()
     }
 
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val requestedMode = requestedConnectionMode(intent) ?: return
+        connectionDialog?.dismiss()
+        if (requestedMode == ConnectionMode.USB) {
+            applyConnectionSettings(
+                mode = ConnectionMode.USB,
+                pin = null,
+                manualHostEnabled = false,
+                host = null
+            )
+        } else {
+            stopClient()
+            connectionMode = ConnectionMode.LAN
+            pairingPin = null
+            desiredRunning = false
+            getPreferences(Context.MODE_PRIVATE).edit()
+                .putString(PREF_CONNECTION_MODE, ConnectionMode.LAN.preferenceValue)
+                .apply()
+            FifLog.network(
+                "event" to "transport_requested",
+                "transport" to ConnectionMode.LAN.preferenceValue,
+                "source" to "launch_intent"
+            )
+            showSettingsButton()
+            if (surfaceReady) {
+                surfaceView.post { showConnectionDialog() }
+            }
+        }
+    }
+
     override fun surfaceCreated(holder: SurfaceHolder) {
         surfaceReady = true
         FifLog.surface("event" to "created", "valid" to holder.surface.isValid)
@@ -203,6 +255,24 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         FifLog.surface("event" to "destroyed")
         stopClient()
         surfaceReady = false
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQUEST_LOCAL_NETWORK_PERMISSION) return
+        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+            FifLog.network("event" to "local_network_permission_granted")
+            maybeAutoStart()
+        } else {
+            desiredRunning = false
+            FifLog.network("event" to "local_network_permission_denied")
+            showSettingsButton()
+            showConnectionError("无线连接需要“附近设备”权限")
+        }
     }
 
     override fun onDestroy() {
@@ -269,6 +339,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                                 showSettingsButton()
                                 showConnectionError(text.removePrefix("Error:").trim())
                             }
+                            text.startsWith("Retry:") -> showSettingsButton()
                         }
                     }
                 }
@@ -326,7 +397,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     private fun createEndpointProvider(): EndpointProvider? = when (connectionMode) {
         ConnectionMode.USB -> UsbEndpointProvider()
-        ConnectionMode.LAN -> pairingPin?.let(::LanEndpointProvider)
+        ConnectionMode.LAN -> pairingPin?.let { pin ->
+            LanEndpointProvider(
+                pin = pin,
+                manualHost = manualLanHost.takeIf { useManualLanHost },
+                discovery = LanDiscovery(applicationContext)
+            )
+        }
         ConnectionMode.RELAY -> null
     }
 
@@ -358,11 +435,45 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             setText(pairingPin.orEmpty())
             visibility = if (connectionMode == ConnectionMode.LAN) View.VISIBLE else View.GONE
         }
-        modes.setOnCheckedChangeListener { _, checkedId ->
-            pinInput.visibility = if (checkedId == lan.id) View.VISIBLE else View.GONE
+        val lanHostModes = RadioGroup(this).apply {
+            orientation = RadioGroup.HORIZONTAL
         }
+        val autoHostOption = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = "自动发现"
+        }
+        val manualHostOption = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = "手动电脑 IP"
+        }
+        lanHostModes.addView(autoHostOption)
+        lanHostModes.addView(manualHostOption)
+        lanHostModes.check(if (useManualLanHost) manualHostOption.id else autoHostOption.id)
+        val hostInput = EditText(this).apply {
+            hint = "电脑 IPv4，例如 192.168.1.10"
+            inputType = InputType.TYPE_CLASS_PHONE
+            filters = arrayOf(InputFilter.LengthFilter(15))
+            setText(manualLanHost.orEmpty())
+        }
+        fun updateLanFieldVisibility() {
+            val lanSelected = modes.checkedRadioButtonId == lan.id
+            pinInput.visibility = if (lanSelected) View.VISIBLE else View.GONE
+            lanHostModes.visibility = if (lanSelected) View.VISIBLE else View.GONE
+            hostInput.visibility = if (
+                lanSelected && lanHostModes.checkedRadioButtonId == manualHostOption.id
+            ) {
+                View.VISIBLE
+            } else {
+                View.GONE
+            }
+        }
+        modes.setOnCheckedChangeListener { _, _ -> updateLanFieldVisibility() }
+        lanHostModes.setOnCheckedChangeListener { _, _ -> updateLanFieldVisibility() }
+        updateLanFieldVisibility()
         content.addView(modes)
         content.addView(pinInput)
+        content.addView(lanHostModes)
+        content.addView(hostInput)
 
         val dialog = AlertDialog.Builder(this)
             .setTitle("连接设置")
@@ -384,25 +495,54 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     pinInput.error = "请输入四位数字 PIN"
                     return@setOnClickListener
                 }
-                applyConnectionSettings(selectedMode, pin.takeIf {
-                    selectedMode == ConnectionMode.LAN
-                })
+                val manualSelected = selectedMode == ConnectionMode.LAN &&
+                    lanHostModes.checkedRadioButtonId == manualHostOption.id
+                val normalizedHost = if (manualSelected) {
+                    LanHostAddress.normalize(hostInput.text.toString())
+                } else {
+                    null
+                }
+                if (manualSelected && normalizedHost == null) {
+                    hostInput.error = "请输入有效的电脑 IPv4 地址"
+                    return@setOnClickListener
+                }
+                applyConnectionSettings(
+                    mode = selectedMode,
+                    pin = pin.takeIf { selectedMode == ConnectionMode.LAN },
+                    manualHostEnabled = manualSelected,
+                    host = normalizedHost
+                )
                 dialog.dismiss()
             }
         }
         dialog.show()
     }
 
-    private fun applyConnectionSettings(mode: ConnectionMode, pin: String?) {
+    private fun applyConnectionSettings(
+        mode: ConnectionMode,
+        pin: String?,
+        manualHostEnabled: Boolean,
+        host: String?
+    ) {
         stopClient()
         connectionMode = mode
         pairingPin = pin
+        useManualLanHost = manualHostEnabled
+        manualLanHost = host ?: manualLanHost
         getPreferences(Context.MODE_PRIVATE).edit()
             .putString(PREF_CONNECTION_MODE, mode.preferenceValue)
+            .putBoolean(PREF_LAN_MANUAL_HOST, useManualLanHost)
+            .putString(PREF_LAN_HOST, manualLanHost)
             .apply()
         desiredRunning = true
-        FifLog.network("event" to "transport_selected", "transport" to mode.preferenceValue)
-        maybeAutoStart()
+        FifLog.network(
+            "event" to "transport_selected",
+            "transport" to mode.preferenceValue,
+            "lan_host_mode" to if (useManualLanHost) "manual" else "automatic"
+        )
+        if (mode != ConnectionMode.LAN || ensureLocalNetworkPermission()) {
+            maybeAutoStart()
+        }
     }
 
     private fun showSettingsButton() {
@@ -410,6 +550,19 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             mainHandler.removeCallbacks(hideSettingsButtonAction)
             settingsButton.visibility = View.VISIBLE
         }
+    }
+
+    private fun ensureLocalNetworkPermission(): Boolean {
+        if (Build.VERSION.SDK_INT != 36) return true
+        if (checkSelfPermission(LOCAL_NETWORK_PERMISSION) == PackageManager.PERMISSION_GRANTED) {
+            return true
+        }
+        statusView.text = "Waiting for local network permission"
+        requestPermissions(
+            arrayOf(LOCAL_NETWORK_PERMISSION),
+            REQUEST_LOCAL_NETWORK_PERMISSION
+        )
+        return false
     }
 
     private fun hideSettingsButtonDelayed() {
@@ -440,8 +593,20 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             windowManager.defaultDisplay.refreshRate
         }
 
+    private fun requestedConnectionMode(intent: Intent?): ConnectionMode? =
+        when (intent?.getStringExtra(EXTRA_CONNECTION_MODE)?.lowercase()) {
+            ConnectionMode.USB.preferenceValue -> ConnectionMode.USB
+            ConnectionMode.LAN.preferenceValue -> ConnectionMode.LAN
+            else -> null
+        }
+
     private companion object {
+        const val EXTRA_CONNECTION_MODE = "fifscreen_connection_mode"
         const val PREF_CONNECTION_MODE = "connection_mode"
+        const val PREF_LAN_MANUAL_HOST = "lan_manual_host"
+        const val PREF_LAN_HOST = "lan_host"
+        const val LOCAL_NETWORK_PERMISSION = "android.permission.NEARBY_WIFI_DEVICES"
+        const val REQUEST_LOCAL_NETWORK_PERMISSION = 1001
         const val USB_RECONNECT_DELAY_MS = 500L
         const val LAN_RECONNECT_DELAY_MS = 1800L
         const val SETTINGS_BUTTON_HIDE_DELAY_MS = 2200L

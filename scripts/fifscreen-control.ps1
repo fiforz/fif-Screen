@@ -61,14 +61,17 @@ function Test-ExecutableVersion {
 }
 
 function Select-VersionedExecutable {
-    param([string[]]$Candidates)
+    param(
+        [string]$Component,
+        [string[]]$Candidates
+    )
 
     foreach ($candidate in $Candidates) {
         if (Test-ExecutableVersion -Path $candidate -ExpectedVersion $AppVersion) {
             return $candidate
         }
     }
-    return $Candidates[0]
+    throw "找不到版本 $AppVersion 的$Component，请先完成当前版本构建。"
 }
 
 $RuntimeRoot = Join-Path $RepoRoot 'runtime'
@@ -84,14 +87,16 @@ if ($InstalledLayout) {
 } else {
     $AdbPath = Join-Path $RepoRoot 'tools\android-sdk\platform-tools\adb.exe'
     $ApkPath = Join-Path $RepoRoot 'android-client\build\outputs\apk\debug\android-client-debug.apk'
-    $HostPath = Select-VersionedExecutable -Candidates @(
+    $HostPath = Select-VersionedExecutable -Component 'Windows 主机' -Candidates @(
         (Join-Path $RepoRoot 'build\installer-release\windows-host\fif-host.exe'),
         (Join-Path $RepoRoot "artifacts\installer\stage-$AppVersion-development\runtime\bin\fif-host.exe"),
+        (Join-Path $RepoRoot 'build\verify-lan-msvc\windows-host\fif-host.exe'),
         (Join-Path $RepoRoot 'build\host\windows-host\fif-host.exe')
     )
-    $LauncherPath = Select-VersionedExecutable -Candidates @(
+    $LauncherPath = Select-VersionedExecutable -Component '软件设备启动器' -Candidates @(
         (Join-Path $RepoRoot 'build\installer-release\windows-driver\FifIddDeviceLauncher\fif-idd-device-launcher.exe'),
         (Join-Path $RepoRoot "artifacts\installer\stage-$AppVersion-development\runtime\bin\fif-idd-device-launcher.exe"),
+        (Join-Path $RepoRoot 'build\verify-lan-msvc\windows-driver\FifIddDeviceLauncher\fif-idd-device-launcher.exe'),
         (Join-Path $RepoRoot 'build\stage-driver-gate-clean\windows-driver\FifIddDeviceLauncher\fif-idd-device-launcher.exe')
     )
     $UpdateScriptPath = Join-Path $RepoRoot 'packaging\scripts\check-update.ps1'
@@ -258,9 +263,10 @@ function Show-UsageTutorial {
 
 1. 先通过 USB 安装一次 FifScreen Android 应用；之后无线使用时不需要连接数据线。
 2. 确保电脑与 Android 设备连接到同一个可信局域网，并关闭会隔离局域网设备的访客 Wi-Fi。
-3. 在 Windows 控制中心选择“无线局域网”，输入任意四位数字 PIN，再点击“启动扩展屏”。
+3. 在 Windows 控制中心选择“无线局域网”，输入任意四位数字 PIN，再点击“应用 PIN 并等待连接”。
 4. 在 Android 应用中打开连接设置，选择“无线局域网”，输入与电脑相同的四位 PIN。
-5. Android 应用会自动发现局域网内的 FifScreen 主机并完成握手。PIN 不会通过局域网广播，也不会保存到磁盘。
+5. 默认使用自动发现；找不到电脑时，选择“手动电脑 IP”，输入 Windows 控制中心显示的 IPv4 地址。
+6. PIN 不会通过局域网广播，也不会保存到磁盘。
 
 四、启动与切换 FifScreen
 
@@ -275,7 +281,7 @@ function Show-UsageTutorial {
 
 • 显示“未连接”：确认 USB 调试授权没有被拒绝，更换数据线或 USB 接口后重新连接。
 • 手机只充电：从 USB 用途通知中选择“文件传输”，再重新授权 USB 调试。
-• 无线模式找不到电脑：确认两台设备在同一局域网、PIN 完全一致，并检查路由器是否启用了 AP/客户端隔离。
+• 无线模式找不到电脑：先使用控制中心显示的电脑 IP 手动连接；仍失败时检查 Windows 防火墙及路由器的 AP/客户端隔离。
 • 画面卡顿：关闭手机省电模式，避免通过 USB 集线器连接，并保持电脑显卡驱动为较新版本。
 • 更换手机：新设备必须重新完成一次 USB 调试授权，然后点击“重新连接手机”。
 "@
@@ -381,6 +387,58 @@ function Get-RequestedConnectionSettings {
     return [pscustomobject]@{ Mode = $mode; Pin = $pin }
 }
 
+function Get-LanIPv4Addresses {
+    $candidates = @()
+    foreach ($adapter in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+        try {
+            if ($adapter.OperationalStatus -ne [System.Net.NetworkInformation.OperationalStatus]::Up) {
+                continue
+            }
+            if ($adapter.NetworkInterfaceType -in @(
+                [System.Net.NetworkInformation.NetworkInterfaceType]::Loopback,
+                [System.Net.NetworkInformation.NetworkInterfaceType]::Tunnel
+            )) {
+                continue
+            }
+
+            $properties = $adapter.GetIPProperties()
+            $hasGateway = @($properties.GatewayAddresses | Where-Object {
+                $_.Address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork -and
+                $_.Address.ToString() -ne '0.0.0.0'
+            }).Count -gt 0
+            foreach ($unicast in $properties.UnicastAddresses) {
+                if ($unicast.Address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
+                    continue
+                }
+                $address = $unicast.Address.ToString()
+                if ($address -eq '0.0.0.0' -or $address.StartsWith('127.')) {
+                    continue
+                }
+                $candidates += [pscustomobject]@{
+                    Address = $address
+                    HasGateway = $hasGateway
+                    Adapter = $adapter.Name
+                }
+            }
+        } catch {}
+    }
+
+    $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    return @($candidates |
+        Sort-Object @{ Expression = 'HasGateway'; Descending = $true }, Adapter, Address |
+        Where-Object { $seen.Add($_.Address) } |
+        ForEach-Object { $_.Address })
+}
+
+function Get-LanAddressHint {
+    $addresses = @(Get-LanIPv4Addresses)
+    if (-not $addresses) {
+        return '电脑 IP：未检测到 IPv4；请先连接 Wi-Fi 或网线'
+    }
+    $visible = @($addresses | Select-Object -First 3)
+    return '电脑 IP：' + ($visible -join ' / ') + '（手机自动发现失败时可手动输入）'
+}
+
 function Get-HostConnectionMode {
     param([System.Diagnostics.Process]$Process)
     try {
@@ -457,12 +515,11 @@ function Ensure-Host {
     }
 
     if (-not (Test-Path $HostPath)) {
-        Add-Log "找不到 Windows 主机程序：$HostPath"
-        return
+        throw "找不到 Windows 主机程序：$HostPath"
     }
     if (-not (Test-ExecutableVersion -Path $HostPath -ExpectedVersion $AppVersion)) {
-        Add-Log "Windows 主机版本与控制中心不匹配：需要 $AppVersion | 路径 $HostPath"
-        return
+        $actualVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($HostPath).FileVersion
+        throw "Windows 主机版本不匹配：需要 $AppVersion，实际 $actualVersion | 路径 $HostPath"
     }
 
     if ($Mode -eq 'Lan') {
@@ -565,9 +622,27 @@ function Configure-Android {
     }
     Add-Log "Android 设备：$Serial"
     if ($Mode -eq 'Usb') {
-        Invoke-Captured -FilePath $AdbPath -Arguments @('-s', $Serial, 'reverse', 'tcp:27183', 'tcp:27183') -TimeoutMs 10000 | Out-Null
-        Invoke-Captured -FilePath $AdbPath -Arguments @('-s', $Serial, 'reverse', 'tcp:27184', 'tcp:27184') -TimeoutMs 10000 | Out-Null
-        Add-Log 'USB 调试通道已配置'
+        $controlReverse = Invoke-Captured -FilePath $AdbPath `
+            -Arguments @('-s', $Serial, 'reverse', 'tcp:27183', 'tcp:27183') -TimeoutMs 10000
+        if ($controlReverse.ExitCode -ne 0) {
+            $details = ($controlReverse.Output + $controlReverse.Error).Trim()
+            throw "USB 控制通道配置失败：$details"
+        }
+        $videoReverse = Invoke-Captured -FilePath $AdbPath `
+            -Arguments @('-s', $Serial, 'reverse', 'tcp:27184', 'tcp:27184') -TimeoutMs 10000
+        if ($videoReverse.ExitCode -ne 0) {
+            $details = ($videoReverse.Output + $videoReverse.Error).Trim()
+            throw "USB 视频通道配置失败：$details"
+        }
+        $reverseList = Invoke-Captured -FilePath $AdbPath `
+            -Arguments @('-s', $Serial, 'reverse', '--list') -TimeoutMs 10000
+        $reverseText = ($reverseList.Output + $reverseList.Error).Trim()
+        if ($reverseList.ExitCode -ne 0 -or
+            $reverseText -notmatch 'tcp:27183\s+tcp:27183' -or
+            $reverseText -notmatch 'tcp:27184\s+tcp:27184') {
+            throw "USB 调试通道校验失败：$reverseText"
+        }
+        Add-Log 'USB 调试通道已配置并校验：控制 27183 / 视频 27184'
     } else {
         Add-Log '无线模式不会使用 ADB reverse；USB 仅用于安装或启动 Android 应用'
     }
@@ -621,8 +696,18 @@ function Configure-Android {
 
     Invoke-Captured -FilePath $AdbPath -Arguments @('-s', $Serial, 'shell', 'input', 'keyevent', 'WAKEUP') -TimeoutMs 10000 | Out-Null
     Invoke-Captured -FilePath $AdbPath -Arguments @('-s', $Serial, 'shell', 'wm', 'dismiss-keyguard') -TimeoutMs 10000 | Out-Null
-    Invoke-Captured -FilePath $AdbPath -Arguments @('-s', $Serial, 'shell', 'am', 'start', '-n', 'com.fif.screen/.MainActivity') -TimeoutMs 15000 | Out-Null
-    Add-Log 'Android 应用已启动'
+    $androidMode = $Mode.ToLowerInvariant()
+    $launch = Invoke-Captured -FilePath $AdbPath `
+        -Arguments @(
+            '-s', $Serial, 'shell', 'am', 'start',
+            '-n', 'com.fif.screen/.MainActivity',
+            '--es', 'fifscreen_connection_mode', $androidMode
+        ) -TimeoutMs 15000
+    if ($launch.ExitCode -ne 0) {
+        $details = ($launch.Output + $launch.Error).Trim()
+        throw "Android 应用启动失败：$details"
+    }
+    Add-Log "Android 应用已启动并切换连接方式：$Mode"
 }
 
 function Start-FifScreen {
@@ -632,7 +717,17 @@ function Start-FifScreen {
     $serial = Get-AdbSerial
     Ensure-Host -Serial $serial -Mode $settings.Mode -Pin $settings.Pin
     Configure-Android -Serial $serial -InstallApk $true -Mode $settings.Mode
+    if ($settings.Mode -eq 'Lan') {
+        Add-Log '无线 PIN 已应用，主机正在等待 Android 使用相同 PIN 连接'
+    }
     Refresh-Status
+}
+
+function Apply-LanSettings {
+    if (-not $lanModeRadio.Checked) {
+        throw '请先选择“无线局域网”。'
+    }
+    Start-FifScreen
 }
 
 function Stop-FifScreen {
@@ -670,6 +765,7 @@ function Refresh-Status {
     $serial = Get-AdbSerial
     $hostProcess = Get-Process fif-host -ErrorAction SilentlyContinue
     $launcher = Get-LauncherStatus
+    $lanAddresses = @(Get-LanIPv4Addresses)
     $summary = @()
     $summary += if ($serial) { "ADB：$serial" } else { 'ADB：未连接（无线模式无需 ADB）' }
     $summary += if ($hostProcess) {
@@ -678,8 +774,16 @@ function Refresh-Status {
     } else { '主机服务：已停止' }
     $summary += if ($launcher.Owner) { '设备所有者：运行中' } else { '设备所有者：未运行' }
     $summary += if ($launcher.Device) { '扩展显示：已存在' } else { '扩展显示：不存在' }
+    $summary += if ($lanAddresses) {
+        '电脑 IP：' + (@($lanAddresses | Select-Object -First 2) -join ' / ')
+    } else {
+        '电脑 IP：未检测到'
+    }
     if ($null -ne $statusLabel -and -not $statusLabel.IsDisposed) {
         $statusLabel.Text = ($summary -join '    ')
+    }
+    if ($null -ne $lanHint -and -not $lanHint.IsDisposed) {
+        $lanHint.Text = Get-LanAddressHint
     }
     Add-Log ($summary -join ' | ')
 }
@@ -697,8 +801,8 @@ if ($Action -ne 'Gui') {
 
 $form = [System.Windows.Forms.Form]::new()
 $form.Text = "FifScreen 控制中心 $AppVersion - 1080p"
-$form.Size = [System.Drawing.Size]::new(860, 650)
-$form.MinimumSize = [System.Drawing.Size]::new(860, 610)
+$form.Size = [System.Drawing.Size]::new(860, 690)
+$form.MinimumSize = [System.Drawing.Size]::new(860, 650)
 $form.StartPosition = 'CenterScreen'
 $form.Font = [System.Drawing.Font]::new('Microsoft YaHei UI', 9)
 
@@ -729,7 +833,7 @@ $form.Controls.Add($statusLabel)
 $connectionGroup = [System.Windows.Forms.GroupBox]::new()
 $connectionGroup.Text = '连接方式'
 $connectionGroup.Location = [System.Drawing.Point]::new(16, 80)
-$connectionGroup.Size = [System.Drawing.Size]::new(810, 78)
+$connectionGroup.Size = [System.Drawing.Size]::new(810, 120)
 $connectionGroup.Anchor = 'Top, Left, Right'
 $form.Controls.Add($connectionGroup)
 
@@ -749,7 +853,7 @@ $connectionGroup.Controls.Add($lanModeRadio)
 
 $pinLabel = [System.Windows.Forms.Label]::new()
 $pinLabel.Text = '四位 PIN：'
-$pinLabel.Location = [System.Drawing.Point]::new(322, 35)
+$pinLabel.Location = [System.Drawing.Point]::new(306, 35)
 $pinLabel.AutoSize = $true
 $connectionGroup.Controls.Add($pinLabel)
 
@@ -759,53 +863,73 @@ $pinInput.PasswordChar = '*'
 $pinInput.AsciiOnly = $true
 $pinInput.TextMaskFormat = [System.Windows.Forms.MaskFormat]::ExcludePromptAndLiterals
 $pinInput.Text = $PairingPin
-$pinInput.Location = [System.Drawing.Point]::new(404, 31)
+$pinInput.Location = [System.Drawing.Point]::new(388, 31)
 $pinInput.Size = [System.Drawing.Size]::new(84, 28)
 $pinInput.Enabled = $lanModeRadio.Checked
 $connectionGroup.Controls.Add($pinInput)
 
+$applyLanButton = [System.Windows.Forms.Button]::new()
+$applyLanButton.Text = '应用 PIN 并等待连接'
+$applyLanButton.Location = [System.Drawing.Point]::new(500, 27)
+$applyLanButton.Size = [System.Drawing.Size]::new(282, 36)
+$applyLanButton.Enabled = $lanModeRadio.Checked
+$applyLanButton.Add_Click({ Invoke-UiAction -Action { Apply-LanSettings } })
+$connectionGroup.Controls.Add($applyLanButton)
+
 $lanHint = [System.Windows.Forms.Label]::new()
-$lanHint.Text = '电脑与 Android 设备需处于同一局域网'
-$lanHint.Location = [System.Drawing.Point]::new(512, 35)
-$lanHint.AutoSize = $true
+$lanHint.Text = Get-LanAddressHint
+$lanHint.Location = [System.Drawing.Point]::new(20, 76)
+$lanHint.Size = [System.Drawing.Size]::new(762, 28)
+$lanHint.AutoEllipsis = $true
 $connectionGroup.Controls.Add($lanHint)
 
-$usbModeRadio.Add_CheckedChanged({ $pinInput.Enabled = $lanModeRadio.Checked })
+$usbModeRadio.Add_CheckedChanged({
+    $pinInput.Enabled = $lanModeRadio.Checked
+    $applyLanButton.Enabled = $lanModeRadio.Checked
+})
 $lanModeRadio.Add_CheckedChanged({
     $pinInput.Enabled = $lanModeRadio.Checked
+    $applyLanButton.Enabled = $lanModeRadio.Checked
     if ($lanModeRadio.Checked) { $pinInput.Focus() }
+})
+$pinInput.Add_KeyDown({
+    param($sender, $eventArgs)
+    if ($eventArgs.KeyCode -eq [System.Windows.Forms.Keys]::Enter -and $lanModeRadio.Checked) {
+        $eventArgs.SuppressKeyPress = $true
+        Invoke-UiAction -Action { Apply-LanSettings }
+    }
 })
 
 $startButton = [System.Windows.Forms.Button]::new()
 $startButton.Text = '启动扩展屏'
-$startButton.Location = [System.Drawing.Point]::new(16, 174)
+$startButton.Location = [System.Drawing.Point]::new(16, 216)
 $startButton.Size = [System.Drawing.Size]::new(150, 42)
 $startButton.Add_Click({ Invoke-UiAction -Action { Start-FifScreen } })
 $form.Controls.Add($startButton)
 
 $stopButton = [System.Windows.Forms.Button]::new()
 $stopButton.Text = '停止扩展屏'
-$stopButton.Location = [System.Drawing.Point]::new(182, 174)
+$stopButton.Location = [System.Drawing.Point]::new(182, 216)
 $stopButton.Size = [System.Drawing.Size]::new(150, 42)
 $stopButton.Add_Click({ Invoke-UiAction -Action { Stop-FifScreen } })
 $form.Controls.Add($stopButton)
 
 $reconnectButton = [System.Windows.Forms.Button]::new()
 $reconnectButton.Text = '重新连接手机'
-$reconnectButton.Location = [System.Drawing.Point]::new(348, 174)
+$reconnectButton.Location = [System.Drawing.Point]::new(348, 216)
 $reconnectButton.Size = [System.Drawing.Size]::new(150, 42)
 $reconnectButton.Add_Click({ Invoke-UiAction -Action { Reconnect-Android } })
 $form.Controls.Add($reconnectButton)
 
 $statusButton = [System.Windows.Forms.Button]::new()
 $statusButton.Text = '刷新状态'
-$statusButton.Location = [System.Drawing.Point]::new(514, 174)
+$statusButton.Location = [System.Drawing.Point]::new(514, 216)
 $statusButton.Size = [System.Drawing.Size]::new(150, 42)
 $statusButton.Add_Click({ Invoke-UiAction -Action { Refresh-Status } })
 $form.Controls.Add($statusButton)
 
 $logBox = [System.Windows.Forms.TextBox]::new()
-$logBox.Location = [System.Drawing.Point]::new(16, 232)
+$logBox.Location = [System.Drawing.Point]::new(16, 274)
 $logBox.Size = [System.Drawing.Size]::new(810, 360)
 $logBox.Anchor = 'Top, Bottom, Left, Right'
 $logBox.Multiline = $true

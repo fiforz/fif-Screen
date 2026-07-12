@@ -60,8 +60,15 @@ foreach ($candidateUrl in @($UpdateManifestUrl, $ReleaseApiUrl, $FallbackManifes
 function Find-RequiredFile {
     param([string]$Name, [string[]]$Candidates)
     foreach ($candidate in $Candidates) {
-        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
-            return (Resolve-Path -LiteralPath $candidate).Path
+        if (-not $candidate) {
+            continue
+        }
+        try {
+            if (Test-Path -LiteralPath $candidate -ErrorAction Stop) {
+                return (Resolve-Path -LiteralPath $candidate -ErrorAction Stop).Path
+            }
+        } catch {
+            continue
         }
     }
     $command = Get-Command $Name -ErrorAction SilentlyContinue

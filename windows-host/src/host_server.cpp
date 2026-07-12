@@ -928,17 +928,33 @@ void HostServer::run_video_channel() {
       continue;
     }
 
+    target = find_fifscreen_display();
     if (!target) {
-      target = find_fifscreen_display();
-      if (target) {
-        if (env_flag_enabled("FIF_SHOW_TEST_OVERLAY")) {
-          overlay.start(*target);
-        }
-      } else {
-        std::cerr << "no capture display available for this video client\n";
-        client.close();
-        continue;
+      const auto wait_started = std::chrono::steady_clock::now();
+      const auto wait_deadline = wait_started + std::chrono::seconds(15);
+      std::cout << "FIFSCREEN_HOST event=display_wait_started timeout_ms=15000\n";
+      while (!target && std::chrono::steady_clock::now() < wait_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        target = find_fifscreen_display(false);
       }
+      if (target) {
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - wait_started).count();
+        std::cout << "FIFSCREEN_HOST event=display_ready_after_wait elapsed_ms="
+                  << elapsed_ms << "\n";
+      }
+    }
+    if (target) {
+      std::cout << "FIFSCREEN_HOST event=display_ready name=\""
+                << narrow(target->device_name) << "\" size="
+                << target->width << "x" << target->height << "\n";
+      if (env_flag_enabled("FIF_SHOW_TEST_OVERLAY")) {
+        overlay.start(*target);
+      }
+    } else {
+      std::cerr << "FIFSCREEN_HOST event=display_wait_timeout\n";
+      client.close();
+      continue;
     }
 
     const VideoMode mode = selected_video_mode();

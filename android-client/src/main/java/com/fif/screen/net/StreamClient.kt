@@ -7,8 +7,12 @@ import com.fif.screen.protocol.FifProtocol
 import com.fif.screen.video.DirtyRawSurfaceRenderer
 import com.fif.screen.video.H264SurfaceDecoder
 import com.fif.screen.video.RawSurfaceRenderer
+import java.io.EOFException
+import java.net.ConnectException
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketException
+import java.net.SocketTimeoutException
 import java.nio.charset.StandardCharsets
 import java.util.ArrayDeque
 import java.util.concurrent.atomic.AtomicLong
@@ -44,9 +48,11 @@ class StreamClient(
 
     fun run() {
         var sessionKey: ByteArray? = null
+        var endpoint: ConnectionEndpoint? = null
+        var stage = ConnectionStage.RESOLVING
         try {
             listener.onStatus("Resolving connection")
-            val endpoint = endpointProvider.resolve()
+            endpoint = endpointProvider.resolve()
             FifLog.network(
                 "event" to "endpoint_resolved",
                 "transport" to endpoint.mode.preferenceValue,
@@ -54,13 +60,16 @@ class StreamClient(
                 "control_port" to endpoint.controlPort,
                 "video_port" to endpoint.videoPort
             )
+            stage = ConnectionStage.CONTROL_CONNECT
             listener.onStatus("Connecting control")
             FifLog.network("event" to "connect_start", "port" to endpoint.controlPort)
-            controlSocket = connect(endpoint.host, endpoint.controlPort)
+            controlSocket = connect(endpoint, endpoint.controlPort)
             val control = controlSocket ?: error("control socket missing")
             if (endpoint.mode == ConnectionMode.LAN) {
+                stage = ConnectionStage.CONTROL_PAIRING
                 sessionKey = pairControl(control, endpoint.pairingPin ?: error("pairing PIN missing"))
             }
+            stage = ConnectionStage.CONTROL_HANDSHAKE
             val helloSentNs = sendHello(control, endpoint.mode)
             FifLog.network("event" to "hello_sent", "android_timestamp_ns" to helloSentNs)
             val ack = FifProtocol.readPacket(control.getInputStream(), FifProtocol.MAX_CONTROL_PAYLOAD)
@@ -82,18 +91,30 @@ class StreamClient(
                 FifLog.network("event" to "touch_unavailable")
             }
 
+            stage = ConnectionStage.VIDEO_CONNECT
             listener.onStatus("Connecting video")
             FifLog.network("event" to "connect_start", "port" to endpoint.videoPort)
-            videoSocket = connect(endpoint.host, endpoint.videoPort)
+            videoSocket = connect(endpoint, endpoint.videoPort)
             val video = videoSocket ?: error("video socket missing")
             if (endpoint.mode == ConnectionMode.LAN) {
+                stage = ConnectionStage.VIDEO_AUTHENTICATION
                 pairVideo(video, sessionKey ?: error("LAN session key missing"))
             }
-            readVideoLoop(video)
+            stage = ConnectionStage.VIDEO_STARTUP
+            readVideoLoop(video) { stage = ConnectionStage.STREAMING }
         } catch (e: Exception) {
             if (running) {
-                FifLog.network("event" to "client_error", "message" to e.message)
-                listener.onStatus("Error: ${e.message}")
+                val failure = ConnectionFailureMessages.describe(e, stage, endpoint?.mode)
+                FifLog.network(
+                    "event" to "client_error",
+                    "stage" to stage.logValue,
+                    "transport" to endpoint?.mode?.preferenceValue,
+                    "error" to e.javaClass.simpleName,
+                    "message" to e.message
+                )
+                listener.onStatus(
+                    "${if (failure.notifyUser) "Error" else "Retry"}: ${failure.message}"
+                )
             }
         } finally {
             sessionKey?.fill(0)
@@ -153,12 +174,27 @@ class StreamClient(
         return true
     }
 
-    private fun connect(host: String, port: Int): Socket =
-        Socket().apply {
+    private fun connect(endpoint: ConnectionEndpoint, port: Int): Socket {
+        val socket = Socket()
+        try {
+            endpoint.network?.bindSocket(socket)
+            socket.apply {
             tcpNoDelay = true
-            connect(InetSocketAddress(host, port), 3000)
-            FifLog.network("event" to "connect_success", "host" to host, "port" to port)
+                keepAlive = true
+                connect(InetSocketAddress(endpoint.host, port), CONNECT_TIMEOUT_MS)
+            }
+            FifLog.network(
+                "event" to "connect_success",
+                "host" to endpoint.host,
+                "port" to port,
+                "network" to (endpoint.network?.toString() ?: "default")
+            )
+            return socket
+        } catch (error: Exception) {
+            runCatching { socket.close() }
+            throw error
         }
+    }
 
     private fun sendHello(socket: Socket, mode: ConnectionMode): Long {
         val payload = """
@@ -305,8 +341,8 @@ class StreamClient(
         inputLock.withLock { inputAvailable.signalAll() }
     }
 
-    private fun readVideoLoop(socket: Socket) {
-        listener.onStatus("Streaming")
+    private fun readVideoLoop(socket: Socket, onStreamReady: () -> Unit) {
+        listener.onStatus("Waiting for video")
         var lastStatsNs = System.nanoTime()
         var receivedFrames = 0L
         var videoBytesReceived = 0L
@@ -322,6 +358,7 @@ class StreamClient(
                     configuredCodec = config.optString("codec", "video/avc")
                     configuredWidth = config.optInt("width", 1280)
                     configuredHeight = config.optInt("height", 720)
+                    onStreamReady()
                     FifLog.decoder(
                         "event" to "video_config",
                         "codec" to configuredCodec,
@@ -471,7 +508,79 @@ class StreamClient(
     private companion object {
         const val MAX_INPUT_QUEUE_SIZE = 64
         const val PAIRING_TIMEOUT_MS = 7000
+        const val CONNECT_TIMEOUT_MS = 3500
     }
 }
 
 class PairingException(message: String) : Exception(message)
+
+internal enum class ConnectionStage(val logValue: String) {
+    RESOLVING("resolving"),
+    CONTROL_CONNECT("control_connect"),
+    CONTROL_PAIRING("control_pairing"),
+    CONTROL_HANDSHAKE("control_handshake"),
+    VIDEO_CONNECT("video_connect"),
+    VIDEO_AUTHENTICATION("video_authentication"),
+    VIDEO_STARTUP("video_startup"),
+    STREAMING("streaming")
+}
+
+internal data class ConnectionFailure(val message: String, val notifyUser: Boolean)
+
+internal object ConnectionFailureMessages {
+    fun describe(
+        error: Exception,
+        stage: ConnectionStage,
+        mode: ConnectionMode?
+    ): ConnectionFailure {
+        if (error is LanDiscoveryException || error is PairingException) {
+            return ConnectionFailure(error.message ?: "无线连接失败", true)
+        }
+
+        val wireless = mode == ConnectionMode.LAN || stage == ConnectionStage.RESOLVING
+        return when (error) {
+            is ConnectException -> ConnectionFailure(
+                if (wireless) {
+                    "无法连接电脑，请在 Windows 端点击“应用 PIN 并等待连接”，并检查电脑 IP、防火墙或路由器隔离设置"
+                } else {
+                    "USB 通道未就绪，请在 Windows 控制中心点击“重新连接手机”"
+                },
+                true
+            )
+            is SocketTimeoutException -> ConnectionFailure(timeoutMessage(stage, wireless), true)
+            is EOFException, is SocketException -> ConnectionFailure(
+                closedMessage(stage, wireless),
+                stage != ConnectionStage.STREAMING
+            )
+            else -> ConnectionFailure(error.message?.takeIf { it.isNotBlank() } ?: "连接失败", true)
+        }
+    }
+
+    private fun timeoutMessage(stage: ConnectionStage, wireless: Boolean): String = when (stage) {
+        ConnectionStage.CONTROL_PAIRING -> "PIN 配对超时，请确认 Windows 已应用相同 PIN"
+        ConnectionStage.CONTROL_HANDSHAKE -> "电脑控制通道响应超时，请确认 Windows 与 Android 版本一致"
+        ConnectionStage.VIDEO_AUTHENTICATION -> "无线视频认证超时，正在重新建立连接"
+        ConnectionStage.VIDEO_CONNECT -> "无法连接电脑的视频端口，请检查 Windows 防火墙"
+        ConnectionStage.VIDEO_STARTUP -> "电脑扩展屏启动超时，请在 Windows 控制中心重新点击“启动扩展屏”"
+        ConnectionStage.STREAMING -> "画面传输超时，正在自动重连"
+        else -> if (wireless) {
+            "连接电脑超时，请检查电脑 IP、防火墙或路由器隔离设置"
+        } else {
+            "USB 通道连接超时，请重新连接手机"
+        }
+    }
+
+    private fun closedMessage(stage: ConnectionStage, wireless: Boolean): String = when (stage) {
+        ConnectionStage.CONTROL_PAIRING -> "电脑在 PIN 校验前关闭了连接，请重新应用 PIN 并确认两端一致"
+        ConnectionStage.CONTROL_HANDSHAKE -> "电脑关闭了控制通道，请确认 Windows 与 Android 版本一致"
+        ConnectionStage.VIDEO_AUTHENTICATION -> "电脑拒绝了视频通道，请确认扩展显示已启动"
+        ConnectionStage.VIDEO_CONNECT -> "电脑的视频通道已关闭，请确认扩展显示已启动"
+        ConnectionStage.VIDEO_STARTUP -> "电脑尚未提供扩展屏画面，请在 Windows 控制中心点击“启动扩展屏”"
+        ConnectionStage.STREAMING -> "连接已中断，正在自动重连"
+        else -> if (wireless) {
+            "无线连接已关闭，正在重新发现电脑"
+        } else {
+            "USB 连接已关闭，请重新连接手机"
+        }
+    }
+}
