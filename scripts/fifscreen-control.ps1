@@ -271,7 +271,7 @@ function Show-UsageTutorial {
 四、启动与切换 FifScreen
 
 1. 选择“USB 调试”时，保持手机解锁并连接电脑。
-2. 点击“启动扩展屏”。USB 模式会配置 USB 通道、安装或更新手机端 APK，并启动扩展显示；无线模式会等待同一局域网内的 Android 应用连接。
+2. 点击“启动扩展屏”。控制中心会确认驱动和虚拟显示器就绪，并让 Windows 自动切换到扩展桌面；USB 模式还会配置 USB 通道、安装或更新手机端 APK，无线模式会等待同一局域网内的 Android 应用连接。
 3. Windows 的“设置 → 系统 → 显示”中可以调整扩展屏的位置、方向和缩放比例。
 4. USB 重新插拔或更改无线 PIN 后，点击“重新连接手机”。
 5. 不再使用时点击“停止扩展屏”。
@@ -362,7 +362,15 @@ function Get-AndroidPackageInfo {
 
 function Get-LauncherStatus {
     if (-not (Test-Path $LauncherPath)) {
-        return [pscustomobject]@{ Raw = "launcher missing: $LauncherPath"; Owner = $false; Device = $false }
+        return [pscustomobject]@{
+            Raw = "launcher missing: $LauncherPath"
+            Owner = $false
+            Device = $false
+            Healthy = $false
+            DisplayAdapter = $false
+            Monitor = $false
+            DisplayActive = $false
+        }
     }
     $result = Invoke-Captured -FilePath $LauncherPath -Arguments @('status') -TimeoutMs 30000
     $raw = (($result.Output + $result.Error).Trim())
@@ -370,6 +378,10 @@ function Get-LauncherStatus {
         Raw = $raw
         Owner = $raw -match 'owner_running=true'
         Device = $raw -match 'fifscreen_software_device_present=true'
+        Healthy = $raw -match 'fifscreen_software_device_healthy=true'
+        DisplayAdapter = $raw -match 'fifscreen_display_adapter_present=true'
+        Monitor = $raw -match 'fifscreen_monitor_present=true'
+        DisplayActive = $raw -match 'fifscreen_display_active=true'
     }
 }
 
@@ -564,19 +576,67 @@ function Ensure-Host {
     Add-Log "Windows 主机服务已启动：PID $($process.Id) | 连接方式 $Mode"
 }
 
+function Wait-ExtendedDisplayReady {
+    param([int]$TimeoutMs = 20000)
+
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+    $status = Get-LauncherStatus
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if (-not $status.Owner -or -not $status.Device) {
+            Start-Sleep -Milliseconds 250
+            $status = Get-LauncherStatus
+            continue
+        }
+        if ($status.Healthy -and $status.Monitor) {
+            break
+        }
+        Start-Sleep -Milliseconds 250
+        $status = Get-LauncherStatus
+    }
+
+    if (-not $status.Owner -or -not $status.Device) {
+        throw "扩展显示设备节点未能保持运行：$($status.Raw)"
+    }
+    if (-not $status.Healthy) {
+        throw "FifScreen 显示驱动未正常启动。请重新安装当前版本；驱动状态：$($status.Raw)"
+    }
+    if (-not $status.Monitor) {
+        throw "FifScreen 驱动已启动，但 Windows 未创建虚拟显示器。请重新安装当前版本后重试；诊断状态：$($status.Raw)"
+    }
+
+    if (-not $status.DisplayActive) {
+        Add-Log '虚拟显示器已连接，正在让 Windows 切换到扩展桌面'
+        $switchResult = Invoke-Captured -FilePath $LauncherPath -Arguments @('extend') -TimeoutMs 30000
+        if ($switchResult.ExitCode -ne 0) {
+            $details = ($switchResult.Output + $switchResult.Error).Trim()
+            throw "Windows 无法将 FifScreen 切换到扩展桌面（退出码 $($switchResult.ExitCode)）：$details"
+        }
+
+        $deadline = [DateTime]::UtcNow.AddSeconds(15)
+        do {
+            Start-Sleep -Milliseconds 250
+            $status = Get-LauncherStatus
+        } while (-not $status.DisplayActive -and [DateTime]::UtcNow -lt $deadline)
+    }
+
+    if (-not $status.DisplayActive) {
+        throw ('Windows 已识别 FifScreen 虚拟显示器，但未将它加入扩展桌面。请在“设置 → 系统 → 显示”中选择“扩展这些显示器”；诊断状态：' + $status.Raw)
+    }
+    Add-Log '扩展显示画面已就绪，Windows 已启用扩展桌面'
+}
+
 function Ensure-SoftwareDevice {
     $status = Get-LauncherStatus
     if ($status.Owner -and $status.Device) {
         Add-Log '扩展显示设备已运行'
+        Wait-ExtendedDisplayReady
         return
     }
     if (-not $status.Owner -and $status.Device) {
-        Add-Log '警告：扩展显示设备存在，但所有者进程未运行；继续使用现有显示节点'
-        return
+        Add-Log '检测到正在退出的旧显示节点，等待它释放后重新创建'
     }
     if ($status.Owner -and -not $status.Device) {
-        Add-Log '警告：所有者进程存在，但显示节点缺失；不会重复创建设备'
-        return
+        throw ('扩展显示所有者进程仍在运行，但设备节点缺失。请先点击“停止扩展屏”后重试；诊断状态：' + $status.Raw)
     }
 
     Add-Log '正在创建扩展显示设备'
@@ -586,11 +646,12 @@ function Ensure-SoftwareDevice {
         -RedirectStandardOutput $out -RedirectStandardError $err `
         -WindowStyle Hidden -PassThru
 
-    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+    for ($attempt = 0; $attempt -lt 60; $attempt++) {
         Start-Sleep -Milliseconds 500
         $current = Get-LauncherStatus
         if ($current.Owner -and $current.Device) {
             Add-Log "扩展显示设备已上线：所有者 PID $($ownerProcess.Id)"
+            Wait-ExtendedDisplayReady
             return
         }
         if ($ownerProcess.HasExited) {
@@ -773,7 +834,15 @@ function Refresh-Status {
         "主机服务：运行中 PID $($hostProcess[0].Id) / $hostMode"
     } else { '主机服务：已停止' }
     $summary += if ($launcher.Owner) { '设备所有者：运行中' } else { '设备所有者：未运行' }
-    $summary += if ($launcher.Device) { '扩展显示：已存在' } else { '扩展显示：不存在' }
+    $summary += if ($launcher.DisplayActive) {
+        '扩展显示：画面已就绪'
+    } elseif ($launcher.Device -and -not $launcher.Healthy) {
+        '扩展显示：驱动异常'
+    } elseif ($launcher.Device) {
+        '扩展显示：正在初始化'
+    } else {
+        '扩展显示：不存在'
+    }
     $summary += if ($lanAddresses) {
         '电脑 IP：' + (@($lanAddresses | Select-Object -First 2) -join ' / ')
     } else {

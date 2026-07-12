@@ -9,6 +9,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -106,6 +107,10 @@ bool starts_with_case_insensitive(const std::wstring& value, const std::wstring&
   return to_lower(value.substr(0, prefix.size())) == to_lower(prefix);
 }
 
+bool contains_case_insensitive(const std::wstring& value, const std::wstring& needle) {
+  return to_lower(value).find(to_lower(needle)) != std::wstring::npos;
+}
+
 std::wstring format_win32_error(DWORD error) {
   wchar_t* message = nullptr;
   const DWORD size = FormatMessageW(
@@ -187,6 +192,141 @@ struct DeviceRecord {
   ULONG problem_code = 0;
   bool devnode_status_available = false;
 };
+
+struct DisplayRecord {
+  std::wstring device_name;
+  std::wstring device_string;
+  std::wstring device_id;
+  DWORD state_flags = 0;
+  DWORD monitor_count = 0;
+};
+
+struct TopologyRecord {
+  std::wstring source_name;
+  std::wstring source_adapter_path;
+  std::wstring target_adapter_path;
+  std::wstring target_monitor_path;
+  bool active = false;
+};
+
+bool is_fifscreen_adapter_path(const std::wstring& path) {
+  return contains_case_insensitive(path, L"FifScreenIdd") ||
+         contains_case_insensitive(path, L"FifIddDriver");
+}
+
+std::wstring get_adapter_path(const LUID& adapter_id) {
+  DISPLAYCONFIG_ADAPTER_NAME adapter{};
+  adapter.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_ADAPTER_NAME;
+  adapter.header.size = sizeof(adapter);
+  adapter.header.adapterId = adapter_id;
+  if (DisplayConfigGetDeviceInfo(&adapter.header) != ERROR_SUCCESS) {
+    return L"";
+  }
+  return adapter.adapterDevicePath;
+}
+
+std::vector<TopologyRecord> find_fifscreen_topology() {
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    UINT32 path_count = 0;
+    UINT32 mode_count = 0;
+    LONG result = GetDisplayConfigBufferSizes(
+        QDC_ALL_PATHS, &path_count, &mode_count);
+    if (result != ERROR_SUCCESS) {
+      return {};
+    }
+
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths(path_count);
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes(mode_count);
+    result = QueryDisplayConfig(QDC_ALL_PATHS, &path_count, paths.data(),
+                                &mode_count, modes.data(), nullptr);
+    if (result == ERROR_INSUFFICIENT_BUFFER) {
+      continue;
+    }
+    if (result != ERROR_SUCCESS) {
+      return {};
+    }
+
+    std::vector<TopologyRecord> records;
+    for (UINT32 index = 0; index < path_count; ++index) {
+      const auto& path = paths[index];
+      const std::wstring target_adapter_path = get_adapter_path(path.targetInfo.adapterId);
+      if (!is_fifscreen_adapter_path(target_adapter_path)) {
+        continue;
+      }
+
+      DISPLAYCONFIG_SOURCE_DEVICE_NAME source{};
+      source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+      source.header.size = sizeof(source);
+      source.header.adapterId = path.sourceInfo.adapterId;
+      source.header.id = path.sourceInfo.id;
+      (void)DisplayConfigGetDeviceInfo(&source.header);
+
+      DISPLAYCONFIG_TARGET_DEVICE_NAME target{};
+      target.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+      target.header.size = sizeof(target);
+      target.header.adapterId = path.targetInfo.adapterId;
+      target.header.id = path.targetInfo.id;
+      (void)DisplayConfigGetDeviceInfo(&target.header);
+
+      records.push_back(TopologyRecord{
+          source.viewGdiDeviceName,
+          get_adapter_path(path.sourceInfo.adapterId),
+          target_adapter_path,
+          target.monitorDevicePath,
+          (path.flags & DISPLAYCONFIG_PATH_ACTIVE) != 0,
+      });
+    }
+    return records;
+  }
+  return {};
+}
+
+bool topology_is_extended(const TopologyRecord& topology) {
+  return topology.active && !topology.source_name.empty() &&
+         is_fifscreen_adapter_path(topology.source_adapter_path);
+}
+
+bool is_fifscreen_display(const DISPLAY_DEVICEW& device) {
+  return contains_case_insensitive(device.DeviceString, L"FifScreen") ||
+         contains_case_insensitive(device.DeviceID, L"FIFSCREEN") ||
+         contains_case_insensitive(device.DeviceName, L"FifScreen");
+}
+
+std::vector<DisplayRecord> find_fifscreen_displays() {
+  std::vector<DisplayRecord> displays;
+  for (DWORD index = 0;; ++index) {
+    DISPLAY_DEVICEW device{};
+    device.cb = sizeof(device);
+    if (!EnumDisplayDevicesW(nullptr, index, &device, 0)) {
+      break;
+    }
+    if (!is_fifscreen_display(device)) {
+      continue;
+    }
+
+    DisplayRecord record;
+    record.device_name = device.DeviceName;
+    record.device_string = device.DeviceString;
+    record.device_id = device.DeviceID;
+    record.state_flags = device.StateFlags;
+
+    for (DWORD monitor_index = 0;; ++monitor_index) {
+      DISPLAY_DEVICEW monitor{};
+      monitor.cb = sizeof(monitor);
+      if (!EnumDisplayDevicesW(device.DeviceName, monitor_index, &monitor, 0)) {
+        break;
+      }
+      ++record.monitor_count;
+    }
+    displays.push_back(std::move(record));
+  }
+  return displays;
+}
+
+bool device_is_healthy(const DeviceRecord& device) {
+  return device.devnode_status_available && device.problem_code == 0 &&
+         (device.devnode_status & DN_STARTED) != 0 && !device.driver_key.empty();
+}
 
 bool is_fifscreen_device(const DeviceRecord& record) {
   if (starts_with_case_insensitive(record.instance_id, L"SWD\\FifScreenIdd\\")) {
@@ -513,8 +653,15 @@ int command_create() {
 int command_status() {
   const auto devices = find_devices(true);
   const auto recorded_devices = find_devices(false);
+  const auto displays = find_fifscreen_displays();
+  const auto topology = find_fifscreen_topology();
   const OwnerProbe owner = probe_owner();
   const SharedOwnerState owner_state = read_owner_state();
+  const bool all_devices_healthy = !devices.empty() &&
+      std::all_of(devices.begin(), devices.end(), device_is_healthy);
+  const bool monitor_present = !topology.empty();
+  const bool display_active = std::any_of(
+      topology.begin(), topology.end(), topology_is_extended);
   std::wcout << L"owner_running=" << (owner.owner_running ? L"true" : L"false") << L"\n";
   if (owner_state.process_id != 0) {
     std::wcout << L"owner_pid=" << owner_state.process_id << L"\n";
@@ -526,6 +673,32 @@ int command_status() {
              << (devices.empty() ? L"false" : L"true") << L"\n";
   std::wcout << L"fifscreen_software_device_recorded="
              << (recorded_devices.empty() ? L"false" : L"true") << L"\n";
+  std::wcout << L"fifscreen_software_device_healthy="
+             << (all_devices_healthy ? L"true" : L"false") << L"\n";
+  std::wcout << L"fifscreen_display_adapter_present="
+             << (displays.empty() ? L"false" : L"true") << L"\n";
+  std::wcout << L"fifscreen_monitor_present="
+             << (monitor_present ? L"true" : L"false") << L"\n";
+  std::wcout << L"fifscreen_display_active="
+             << (display_active ? L"true" : L"false") << L"\n";
+
+  for (const auto& path : topology) {
+    std::wcout << L"topology_active=" << (path.active ? L"true" : L"false") << L"\n";
+    std::wcout << L"topology_extended="
+               << (topology_is_extended(path) ? L"true" : L"false") << L"\n";
+    std::wcout << L"topology_source_name=" << path.source_name << L"\n";
+    std::wcout << L"topology_source_adapter=" << path.source_adapter_path << L"\n";
+    std::wcout << L"topology_target_adapter=" << path.target_adapter_path << L"\n";
+    std::wcout << L"topology_target_monitor=" << path.target_monitor_path << L"\n";
+  }
+
+  for (const auto& display : displays) {
+    std::wcout << L"display_name=" << display.device_name << L"\n";
+    std::wcout << L"display_string=" << display.device_string << L"\n";
+    std::wcout << L"display_id=" << display.device_id << L"\n";
+    std::wcout << L"display_state_flags=0x" << std::hex << display.state_flags << L"\n";
+    std::wcout << L"display_monitor_count=" << std::dec << display.monitor_count << L"\n";
+  }
 
   if (devices.empty()) {
     if (owner_state.instance_id[0] != L'\0') {
@@ -566,6 +739,36 @@ int command_status() {
     }
   }
   return 0;
+}
+
+int command_extend() {
+  const auto current_topology = find_fifscreen_topology();
+  if (std::any_of(current_topology.begin(), current_topology.end(),
+                  topology_is_extended)) {
+    std::wcout << L"set_display_config_result=ALREADY_EXTENDED\n";
+    std::wcout << L"fifscreen_display_extended=true\n";
+    return 0;
+  }
+
+  const LONG result = SetDisplayConfig(
+      0, nullptr, 0, nullptr, SDC_APPLY | SDC_TOPOLOGY_EXTEND);
+  std::wcout << L"set_display_config_result=" << result << L"\n";
+  if (result != ERROR_SUCCESS) {
+    std::wcerr << L"extend_failed=" << format_win32_error(result) << L"\n";
+    return 1;
+  }
+
+  const DWORD started = GetTickCount();
+  while (GetTickCount() - started < kCreateCallbackTimeoutMs) {
+    const auto topology = find_fifscreen_topology();
+    if (std::any_of(topology.begin(), topology.end(), topology_is_extended)) {
+      std::wcout << L"fifscreen_display_extended=true\n";
+      return 0;
+    }
+    Sleep(250);
+  }
+  std::wcerr << L"fifscreen_display_extended=false\n";
+  return 1;
 }
 
 int command_remove() {
@@ -631,9 +834,10 @@ int command_selftest() {
 }
 
 void print_usage() {
-  std::wcout << L"fif-idd-device-launcher <create|status|remove|selftest>\n";
+  std::wcout << L"fif-idd-device-launcher <create|status|extend|remove|selftest>\n";
   std::wcout << L"  create   Create FifScreen software device and hold it as the owner process.\n";
   std::wcout << L"  status  Enumerate exact FifScreen software device records only.\n";
+  std::wcout << L"  extend  Apply the Windows extended-display topology and verify FifScreen.\n";
   std::wcout << L"  remove  Signal the current FifScreen owner process to close its device handle.\n";
   std::wcout << L"  selftest  Run no-device duplicate-state logic tests.\n";
 }
@@ -653,6 +857,9 @@ int wmain(int argc, wchar_t* argv[]) {
     }
     if (command == L"status") {
       return command_status();
+    }
+    if (command == L"extend") {
+      return command_extend();
     }
     if (command == L"remove") {
       return command_remove();

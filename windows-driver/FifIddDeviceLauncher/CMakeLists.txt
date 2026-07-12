@@ -19,6 +19,10 @@ endif()
 target_compile_features(fif-idd-device-launcher PRIVATE cxx_std_20)
 
 if(WIN32)
+  target_compile_definitions(fif-idd-device-launcher PRIVATE
+    _WIN32_WINNT=0x0A00
+    WINVER=0x0A00
+  )
   target_link_libraries(fif-idd-device-launcher PRIVATE Swdevice Setupapi Cfgmgr32)
 else()
   message(FATAL_ERROR "fif-idd-device-launcher targets Windows only")

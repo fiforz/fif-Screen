@@ -26,6 +26,81 @@ bool contains_case_insensitive(const std::wstring& haystack, const std::wstring&
   return lower_haystack.find(lower_needle) != std::wstring::npos;
 }
 
+bool is_fifscreen_adapter_path(const std::wstring& path) {
+  return contains_case_insensitive(path, L"FifScreenIdd") ||
+         contains_case_insensitive(path, L"FifIddDriver");
+}
+
+std::wstring displayconfig_adapter_path(const LUID& adapter_id) {
+  DISPLAYCONFIG_ADAPTER_NAME adapter{};
+  adapter.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_ADAPTER_NAME;
+  adapter.header.size = sizeof(adapter);
+  adapter.header.adapterId = adapter_id;
+  if (DisplayConfigGetDeviceInfo(&adapter.header) != ERROR_SUCCESS) {
+    return L"";
+  }
+  return adapter.adapterDevicePath;
+}
+
+std::optional<std::wstring> find_fifscreen_displayconfig_source(bool log_candidates) {
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    UINT32 path_count = 0;
+    UINT32 mode_count = 0;
+    LONG result = GetDisplayConfigBufferSizes(
+        QDC_ONLY_ACTIVE_PATHS, &path_count, &mode_count);
+    if (result != ERROR_SUCCESS) {
+      return std::nullopt;
+    }
+
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths(path_count);
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes(mode_count);
+    result = QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &path_count, paths.data(),
+                                &mode_count, modes.data(), nullptr);
+    if (result == ERROR_INSUFFICIENT_BUFFER) {
+      continue;
+    }
+    if (result != ERROR_SUCCESS) {
+      return std::nullopt;
+    }
+
+    for (UINT32 index = 0; index < path_count; ++index) {
+      const auto& path = paths[index];
+      const std::wstring target_adapter =
+          displayconfig_adapter_path(path.targetInfo.adapterId);
+      if (!is_fifscreen_adapter_path(target_adapter)) {
+        continue;
+      }
+
+      DISPLAYCONFIG_SOURCE_DEVICE_NAME source{};
+      source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+      source.header.size = sizeof(source);
+      source.header.adapterId = path.sourceInfo.adapterId;
+      source.header.id = path.sourceInfo.id;
+      if (DisplayConfigGetDeviceInfo(&source.header) != ERROR_SUCCESS) {
+        continue;
+      }
+
+      const std::wstring source_adapter =
+          displayconfig_adapter_path(path.sourceInfo.adapterId);
+      const bool extended = (path.flags & DISPLAYCONFIG_PATH_ACTIVE) != 0 &&
+                            is_fifscreen_adapter_path(source_adapter) &&
+                            source.viewGdiDeviceName[0] != L'\0';
+      if (log_candidates) {
+        std::cout << "displayconfig FifScreen target source="
+                  << narrow(source.viewGdiDeviceName)
+                  << " source_adapter=" << narrow(source_adapter)
+                  << " target_adapter=" << narrow(target_adapter)
+                  << " extended=" << (extended ? "true" : "false") << "\n";
+      }
+      if (extended) {
+        return source.viewGdiDeviceName;
+      }
+    }
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
 std::optional<ScreenTarget> display_from_device(const DISPLAY_DEVICEW& device) {
   DEVMODEW mode{};
   mode.dmSize = sizeof(mode);
@@ -213,6 +288,8 @@ std::string narrow(const std::wstring& value) {
 }
 
 std::optional<ScreenTarget> find_fifscreen_display(bool log_candidates) {
+  const auto displayconfig_source =
+      find_fifscreen_displayconfig_source(log_candidates);
   std::vector<ScreenTarget> active;
   for (DWORD i = 0; i < 16; ++i) {
     DISPLAY_DEVICEW device{};
@@ -243,6 +320,18 @@ std::optional<ScreenTarget> find_fifscreen_display(bool log_candidates) {
   });
   if (fifscreen != active.end()) {
     return *fifscreen;
+  }
+
+  if (displayconfig_source) {
+    auto displayconfig_match = std::find_if(
+        active.begin(), active.end(), [&](const ScreenTarget& target) {
+          return _wcsicmp(target.device_name.c_str(), displayconfig_source->c_str()) == 0;
+        });
+    if (displayconfig_match != active.end()) {
+      std::cout << "FifScreen display resolved from DisplayConfig source "
+                << narrow(*displayconfig_source) << "\n";
+      return *displayconfig_match;
+    }
   }
 
   const char* fallback = std::getenv("FIF_ALLOW_SECONDARY_FALLBACK");
