@@ -50,4 +50,19 @@ if(WIN32)
   target_link_libraries(fif-touch-injector-test PRIVATE fif_protocol User32)
   fif_enable_test_assertions(fif-touch-injector-test)
   add_test(NAME fif-touch-injector-test COMMAND fif-touch-injector-test)
+
+  add_executable(fif-win32-socket-test
+    win32_socket_test.cpp
+    ${CMAKE_SOURCE_DIR}/windows-host/src/win32_socket.cpp
+  )
+  target_include_directories(fif-win32-socket-test PRIVATE
+    ${CMAKE_SOURCE_DIR}/windows-host/src
+  )
+  target_compile_definitions(fif-win32-socket-test PRIVATE
+    _WIN32_WINNT=0x0A00
+    WINVER=0x0A00
+  )
+  target_link_libraries(fif-win32-socket-test PRIVATE Ws2_32)
+  fif_enable_test_assertions(fif-win32-socket-test)
+  add_test(NAME fif-win32-socket-test COMMAND fif-win32-socket-test)
 endif()

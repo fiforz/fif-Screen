@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -617,17 +618,34 @@ int HostServer::run() {
     throw std::runtime_error("relay transport is reserved but not implemented");
   }
 
+  const auto bind_mode = config_.transport == TransportMode::Usb
+      ? BindMode::Loopback
+      : BindMode::Any;
+  TcpServer control_server(config_.control_port, "control", bind_mode);
+  control_server.listen();
+  TcpServer video_server(config_.video_port, "video", bind_mode);
+  video_server.listen();
+
+  std::unique_ptr<UdpServer> discovery_server;
+  if (config_.transport == TransportMode::Lan) {
+    discovery_server = std::make_unique<UdpServer>(config_.discovery_port);
+    discovery_server->listen();
+  }
+
   if (config_.setup_adb_reverse) {
     std::thread adb_reverse([this] { run_adb_reverse_maintainer(); });
     adb_reverse.detach();
   }
   if (config_.transport == TransportMode::Lan) {
-    std::thread discovery([this] { run_lan_discovery(); });
+    std::thread discovery(
+        [this, server = discovery_server.get()] { run_lan_discovery(*server); });
     discovery.detach();
   }
 
-  std::thread control([this] { run_control_channel(); });
-  std::thread video([this] { run_video_channel(); });
+  std::thread control([this, &control_server] {
+    run_control_channel(control_server);
+  });
+  std::thread video([this, &video_server] { run_video_channel(video_server); });
 
   control.join();
   video.join();
@@ -635,9 +653,7 @@ int HostServer::run() {
   return 0;
 }
 
-void HostServer::run_lan_discovery() {
-  UdpServer server(config_.discovery_port);
-  server.listen();
+void HostServer::run_lan_discovery(UdpServer& server) {
   for (;;) {
     const auto datagram = server.receive(fif::kDiscoveryPacketSize);
     if (!datagram) {
@@ -804,13 +820,7 @@ bool HostServer::authenticate_lan_video(Socket& client,
   }
 }
 
-void HostServer::run_control_channel() {
-  const auto bind_mode = config_.transport == TransportMode::Usb
-      ? BindMode::Loopback
-      : BindMode::Any;
-  TcpServer server(config_.control_port, "control", bind_mode);
-  server.listen();
-
+void HostServer::run_control_channel(TcpServer& server) {
   std::uint64_t sequence = 1;
   TouchInjector touch_injector;
 
@@ -894,13 +904,7 @@ void HostServer::run_control_channel() {
   }
 }
 
-void HostServer::run_video_channel() {
-  const auto bind_mode = config_.transport == TransportMode::Usb
-      ? BindMode::Loopback
-      : BindMode::Any;
-  TcpServer server(config_.video_port, "video", bind_mode);
-  server.listen();
-
+void HostServer::run_video_channel(TcpServer& server) {
   auto target = find_fifscreen_display();
   if (!target) {
     std::cerr << "FifScreen display not found; video channel will retry on client connect\n";

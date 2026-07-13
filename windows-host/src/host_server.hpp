@@ -10,6 +10,8 @@
 namespace fif::host {
 
 class Socket;
+class TcpServer;
+class UdpServer;
 
 enum class TransportMode {
   Usb,
@@ -34,9 +36,9 @@ class HostServer {
 
  private:
   void run_adb_reverse_maintainer();
-  void run_lan_discovery();
-  void run_control_channel();
-  void run_video_channel();
+  void run_lan_discovery(UdpServer& server);
+  void run_control_channel(TcpServer& server);
+  void run_video_channel(TcpServer& server);
   bool authenticate_lan_control(Socket& client, std::uint64_t& sequence);
   bool authenticate_lan_video(Socket& client, std::uint64_t& sequence);
 

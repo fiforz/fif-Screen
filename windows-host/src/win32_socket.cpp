@@ -100,8 +100,12 @@ void TcpServer::listen() {
     throw std::runtime_error(last_wsa_error("socket failed"));
   }
 
-  BOOL yes = TRUE;
-  setsockopt(listen_socket_, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&yes), sizeof(yes));
+  BOOL exclusive = TRUE;
+  if (setsockopt(listen_socket_, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+                 reinterpret_cast<const char*>(&exclusive),
+                 sizeof(exclusive)) == SOCKET_ERROR) {
+    throw std::runtime_error(last_wsa_error("SO_EXCLUSIVEADDRUSE failed"));
+  }
 
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
@@ -135,6 +139,16 @@ Socket TcpServer::accept_one() const {
   return Socket(client);
 }
 
+std::uint16_t TcpServer::local_port() const {
+  sockaddr_in addr{};
+  int addr_length = sizeof(addr);
+  if (getsockname(listen_socket_, reinterpret_cast<sockaddr*>(&addr),
+                  &addr_length) == SOCKET_ERROR) {
+    throw std::runtime_error(last_wsa_error("getsockname failed"));
+  }
+  return ntohs(addr.sin_port);
+}
+
 UdpServer::~UdpServer() {
   if (socket_ != INVALID_SOCKET) {
     closesocket(socket_);
@@ -147,9 +161,12 @@ void UdpServer::listen() {
     throw std::runtime_error(last_wsa_error("UDP socket failed"));
   }
 
-  BOOL yes = TRUE;
-  setsockopt(socket_, SOL_SOCKET, SO_REUSEADDR,
-             reinterpret_cast<const char*>(&yes), sizeof(yes));
+  BOOL exclusive = TRUE;
+  if (setsockopt(socket_, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+                 reinterpret_cast<const char*>(&exclusive),
+                 sizeof(exclusive)) == SOCKET_ERROR) {
+    throw std::runtime_error(last_wsa_error("UDP SO_EXCLUSIVEADDRUSE failed"));
+  }
 
   sockaddr_in addr{};
   addr.sin_family = AF_INET;

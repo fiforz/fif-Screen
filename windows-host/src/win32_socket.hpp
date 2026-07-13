@@ -62,6 +62,7 @@ class TcpServer {
 
   void listen();
   [[nodiscard]] Socket accept_one() const;
+  [[nodiscard]] std::uint16_t local_port() const;
 
  private:
   std::uint16_t port_;
