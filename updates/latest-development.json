@@ -2,12 +2,12 @@
     "schemaVersion":  1,
     "product":  "FifScreen",
     "channel":  "development",
-    "version":  "0.5.2",
+    "version":  "0.5.3",
     "architecture":  "x64",
-    "publishedAt":  "2026-07-12T06:12:23.7514697Z",
-    "releaseNotes":  "# FifScreen 0.5.2\n\n本版本优先修复 0.5.1 的 USB 回归，并提高局域网连接在不同 Android 设备和路由器上的兼容性。\n\n## 主要修复\n\n- 控制中心只会启动与自身版本一致的 Windows Host 和软件设备 Launcher；找不到匹配版本时会停止启动，不再继续拉起 Android 后误报控制通道关闭。\n- Windows 选择 USB 调试时会明确要求 Android 切回 USB，不再受手机上一次无线连接设置影响。\n- Windows 分别建立并校验控制端口 27183 和视频端口 27184 的 ADB reverse。\n- Host 在扩展显示尚未完成枚举时最多等待 15 秒，避免过早关闭视频通道造成 `socket closed`。\n- Android 将底层 socket 错误转换为按连接阶段区分的中文提示，并持续自动重连。\n\n## 局域网改进\n\n- 局域网 UDP 发现和 TCP 连接绑定到 Wi-Fi 或以太网，避免被移动数据、VPN 或厂商网络栈错误路由。\n- Android 支持手动输入电脑 IPv4，可绕过禁止广播或启用客户端隔离的网络。\n- Windows 控制中心显示本机 IPv4，并增加“应用 PIN 并等待连接”操作。\n\n## 验证结果\n\n- 真实 Android 设备 USB 控制握手和视频通道通过，1920 x 1080 输出稳定约 49–50 FPS。\n- Android 单元测试、APK 构建和 Lint 通过。\n- Windows 协议、PIN 加密和触控注入测试通过。\n- 0.5.2 开发预览安装包构建和负载版本校验通过。\n\n\u003e 当前安装包仍为测试签名驱动的开发预览版。目标 Windows 必须允许测试签名驱动，安装程序不会修改 BCD、安全启动或自动重启系统。\n",
-    "installerName":  "FifScreen-Setup-0.5.2-dev-x64.exe",
-    "installerUrl":  "https://github.com/fiforz/fif-Screen/releases/download/v0.5.2/FifScreen-Setup-0.5.2-dev-x64.exe",
-    "sha256":  "65FB9269F652735F843DA24341D94CED53947B81C22DF2060E64F93B30C27AA6",
-    "releaseUrl":  "https://github.com/fiforz/fif-Screen/releases/tag/v0.5.2"
+    "publishedAt":  "2026-07-13T04:19:10.0184607Z",
+    "releaseNotes":  "# FifScreen 0.5.3\n\n本版本修复虚拟显示器被 Windows 放入复制拓扑、GUI 连接模式丢失，以及源码控制中心误选旧二进制导致 USB 驱动误报异常的问题。\n\n## 主要修复\n\n- 控制中心会等待 FifScreen 驱动和 Monitor 就绪，主动切换并验证独立扩展桌面后才启动 Host 和 Android。\n- Host 通过 DisplayConfig adapter path 定位 FifScreen 捕获源，不依赖本地化显示名称，复制拓扑下也不会误选物理主屏。\n- 修复选择无线局域网并应用 PIN 后，Host 仍以 USB 模式启动的问题。\n- 源码控制中心在多个同版本构建并存时选择最新产物；旧 Launcher 状态协议会被明确拒绝，不再误报驱动异常。\n- 控制中心和 Host 增加连接模式、进程路径、启动参数及最终 transport 诊断，不记录用户 PIN。\n\n## 验证结果\n\n- Windows Release 构建以及协议、PIN 加密、控制中心回归和触控注入测试全部通过。\n- Android 单元测试、Lint 和 Debug APK 构建通过。\n- 显示驱动重新构建，通过 Signability 和测试签名验证。\n- 在真实设备上验证独立扩展桌面、USB 双 ADB reverse、Android 控制/视频握手和触控。\n- 0.5.3 Development 安装包完成构建、负载版本和安装验证。\n\n\u003e 当前安装包仍为测试签名驱动的开发预览版。目标 Windows 必须允许测试签名驱动，安装程序不会修改 BCD、安全启动或自动重启系统。\n",
+    "installerName":  "FifScreen-Setup-0.5.3-dev-x64.exe",
+    "installerUrl":  "https://github.com/fiforz/fif-Screen/releases/download/v0.5.3/FifScreen-Setup-0.5.3-dev-x64.exe",
+    "sha256":  "59DFAD3BFFE2C293E40DF760B3C1F4CA914D5AEBBE41A67B40AB3BE81CA6E45A",
+    "releaseUrl":  "https://github.com/fiforz/fif-Screen/releases/tag/v0.5.3"
 }

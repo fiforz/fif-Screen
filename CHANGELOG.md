@@ -2,6 +2,24 @@
 
 本项目按语义化版本记录用户可见的变化。
 
+## 0.5.3 - 2026-07-13
+
+### 修复
+
+- 修复部分 Windows 电脑将 FifScreen 虚拟显示器置于复制拓扑，导致驱动和 Monitor 均已创建但 Android 始终收不到可捕获扩展桌面的问题；
+- 控制中心现在等待驱动与虚拟显示器就绪，并通过 DisplayConfig 主动切换、校验独立扩展桌面后才启动 Host 和 Android；
+- Host 通过 FifScreen 软件设备的 DisplayConfig adapter path 定位捕获源，不再依赖本地化显示名称，也不会在复制拓扑下误选物理主屏；
+- 修复 GUI 操作回调遮蔽顶层连接模式变量，导致选择无线局域网并应用 PIN 后仍以 USB 模式启动 Host 的问题；
+- 修复源码控制中心在多个同版本构建产物并存时固定选中旧 Launcher/Host，进而把正常 USB 驱动误报为异常的问题；
+- Launcher 状态协议不兼容时现在明确提示重新构建或安装，不再伪装成驱动故障。
+
+### 诊断与验证
+
+- 控制中心记录请求模式、实际 Host 路径、PID 和启动参数，但不记录 PIN；Host 输出最终 transport 与 ADB reverse 状态；
+- 新增控制中心 GUI 模式与同版本最新构建选择回归测试；
+- 在真实 Windows 设备上验证独立扩展拓扑、USB 双 ADB reverse、Android 控制/视频握手与触控；
+- 通过 Windows Release 构建、协议/PIN/触控测试、Android 单元测试、Lint、APK、驱动 Signability 和 Development 安装包验证。
+
 ## 0.5.2 - 2026-07-12
 
 ### 修复

@@ -108,6 +108,15 @@ int main(int argc, char** argv) {
     config.relay_url = relay_url ? relay_url : "";
   }
 
+  const char* transport = config.transport == fif::host::TransportMode::Lan
+                              ? "lan"
+                          : config.transport == fif::host::TransportMode::Relay
+                              ? "relay"
+                              : "usb";
+  std::cout << "FIFSCREEN_HOST event=startup transport=" << transport
+            << " setup_adb_reverse="
+            << (config.setup_adb_reverse ? "true" : "false") << "\n";
+
   try {
     return fif::host::HostServer(config).run();
   } catch (const std::exception& e) {

@@ -66,10 +66,16 @@ function Select-VersionedExecutable {
         [string[]]$Candidates
     )
 
+    $matchingCandidates = @()
     foreach ($candidate in $Candidates) {
         if (Test-ExecutableVersion -Path $candidate -ExpectedVersion $AppVersion) {
-            return $candidate
+            $matchingCandidates += Get-Item -LiteralPath $candidate
         }
+    }
+    if ($matchingCandidates) {
+        return ($matchingCandidates |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1 -ExpandProperty FullName)
     }
     throw "找不到版本 $AppVersion 的$Component，请先完成当前版本构建。"
 }
@@ -216,10 +222,10 @@ function Start-UpdateCheck {
 }
 
 function Invoke-UiAction {
-    param([scriptblock]$Action)
+    param([scriptblock]$Operation)
 
     try {
-        & $Action
+        & $Operation
     } catch {
         Add-Log ("错误：" + $_.Exception.Message)
     }
@@ -374,6 +380,10 @@ function Get-LauncherStatus {
     }
     $result = Invoke-Captured -FilePath $LauncherPath -Arguments @('status') -TimeoutMs 30000
     $raw = (($result.Output + $result.Error).Trim())
+    if ($result.ExitCode -ne 0 -or
+        $raw -notmatch '(?m)^fifscreen_software_device_healthy=(true|false)\r?$') {
+        throw "软件设备启动器与当前控制中心不兼容，请重新构建或安装当前版本：$LauncherPath"
+    }
     return [pscustomobject]@{
         Raw = $raw
         Owner = $raw -match 'owner_running=true'
@@ -386,9 +396,9 @@ function Get-LauncherStatus {
 }
 
 function Get-RequestedConnectionSettings {
-    $mode = $ConnectionMode
-    $pin = $PairingPin
-    if ($Action -eq 'Gui') {
+    $mode = $script:ConnectionMode
+    $pin = $script:PairingPin
+    if ($script:Action -eq 'Gui') {
         $mode = if ($lanModeRadio.Checked) { 'Lan' } else { 'Usb' }
         $pin = [string]$pinInput.Text
     }
@@ -458,8 +468,13 @@ function Get-HostConnectionMode {
         if ($commandLine -match '(?i)--transport\s+lan') {
             return 'Lan'
         }
-    } catch {}
-    return 'Usb'
+        if ($commandLine -match '(?i)--transport\s+usb') {
+            return 'Usb'
+        }
+    } catch {
+        Add-Log "无法读取 Windows 主机 PID $($Process.Id) 的命令行：$($_.Exception.Message)"
+    }
+    return 'Unknown'
 }
 
 function Ensure-LanFirewallRules {
@@ -496,6 +511,11 @@ function Ensure-Host {
     )
     $existing = @(Get-Process fif-host -ErrorAction SilentlyContinue)
     if ($existing) {
+        foreach ($candidate in $existing) {
+            $candidatePath = try { $candidate.Path } catch { '<不可读取>' }
+            $candidateMode = Get-HostConnectionMode -Process $candidate
+            Add-Log "检测到 Windows 主机：PID $($candidate.Id) | 路径 $candidatePath | 连接方式 $candidateMode"
+        }
         $matching = @($existing | Where-Object {
             try {
                 Test-ExecutableVersion -Path $_.Path -ExpectedVersion $AppVersion
@@ -557,9 +577,11 @@ function Ensure-Host {
 
     $out = Join-Path $ArtifactDir 'fif-host.out.log'
     $err = Join-Path $ArtifactDir 'fif-host.err.log'
+    $transportArgument = $Mode.ToLowerInvariant()
+    Add-Log "准备启动 Windows 主机：路径 $HostPath | 参数 --transport $transportArgument"
     try {
         $process = Start-Process -FilePath $HostPath `
-            -ArgumentList @('--transport', $Mode.ToLowerInvariant()) `
+            -ArgumentList @('--transport', $transportArgument) `
             -WorkingDirectory $RepoRoot `
             -RedirectStandardOutput $out -RedirectStandardError $err `
             -WindowStyle Hidden -PassThru
@@ -572,6 +594,14 @@ function Ensure-Host {
             (Get-Content -LiteralPath $err -Raw -ErrorAction SilentlyContinue).Trim()
         } else { '' }
         throw "Windows 主机服务启动失败：$details"
+    }
+    $actualMode = Get-HostConnectionMode -Process $process
+    if ($actualMode -ne 'Unknown' -and $actualMode -ne $Mode) {
+        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        throw "Windows 主机连接方式校验失败：请求 $Mode，实际命令行 $actualMode"
+    }
+    if ($actualMode -eq 'Unknown') {
+        Add-Log "警告：无法通过系统命令行校验 Windows 主机 PID $($process.Id) 的连接方式；请检查 Host 启动日志"
     }
     Add-Log "Windows 主机服务已启动：PID $($process.Id) | 连接方式 $Mode"
 }
@@ -773,7 +803,7 @@ function Configure-Android {
 
 function Start-FifScreen {
     $settings = Get-RequestedConnectionSettings
-    Add-Log "正在启动扩展屏：连接方式 $($settings.Mode)"
+    Add-Log "启动请求：界面动作 $script:Action | 连接方式 $($settings.Mode) | PIN 已提供 $($settings.Mode -eq 'Lan' -and $settings.Pin.Length -eq 4)"
     Ensure-SoftwareDevice
     $serial = Get-AdbSerial
     Ensure-Host -Serial $serial -Mode $settings.Mode -Pin $settings.Pin
@@ -878,11 +908,11 @@ $form.Font = [System.Drawing.Font]::new('Microsoft YaHei UI', 9)
 $menuStrip = [System.Windows.Forms.MenuStrip]::new()
 $aboutMenu = [System.Windows.Forms.ToolStripMenuItem]::new('关于')
 $checkUpdateMenu = [System.Windows.Forms.ToolStripMenuItem]::new('检查更新')
-$checkUpdateMenu.Add_Click({ Invoke-UiAction -Action { Start-UpdateCheck } })
+$checkUpdateMenu.Add_Click({ Invoke-UiAction -Operation { Start-UpdateCheck } })
 $tutorialMenu = [System.Windows.Forms.ToolStripMenuItem]::new('使用教程')
-$tutorialMenu.Add_Click({ Invoke-UiAction -Action { Show-UsageTutorial } })
+$tutorialMenu.Add_Click({ Invoke-UiAction -Operation { Show-UsageTutorial } })
 $aboutProductMenu = [System.Windows.Forms.ToolStripMenuItem]::new('关于 FifScreen')
-$aboutProductMenu.Add_Click({ Invoke-UiAction -Action { Show-AboutFifScreen } })
+$aboutProductMenu.Add_Click({ Invoke-UiAction -Operation { Show-AboutFifScreen } })
 [void]$aboutMenu.DropDownItems.Add($checkUpdateMenu)
 [void]$aboutMenu.DropDownItems.Add($tutorialMenu)
 [void]$aboutMenu.DropDownItems.Add([System.Windows.Forms.ToolStripSeparator]::new())
@@ -942,7 +972,7 @@ $applyLanButton.Text = '应用 PIN 并等待连接'
 $applyLanButton.Location = [System.Drawing.Point]::new(500, 27)
 $applyLanButton.Size = [System.Drawing.Size]::new(282, 36)
 $applyLanButton.Enabled = $lanModeRadio.Checked
-$applyLanButton.Add_Click({ Invoke-UiAction -Action { Apply-LanSettings } })
+$applyLanButton.Add_Click({ Invoke-UiAction -Operation { Apply-LanSettings } })
 $connectionGroup.Controls.Add($applyLanButton)
 
 $lanHint = [System.Windows.Forms.Label]::new()
@@ -965,7 +995,7 @@ $pinInput.Add_KeyDown({
     param($sender, $eventArgs)
     if ($eventArgs.KeyCode -eq [System.Windows.Forms.Keys]::Enter -and $lanModeRadio.Checked) {
         $eventArgs.SuppressKeyPress = $true
-        Invoke-UiAction -Action { Apply-LanSettings }
+        Invoke-UiAction -Operation { Apply-LanSettings }
     }
 })
 
@@ -973,28 +1003,28 @@ $startButton = [System.Windows.Forms.Button]::new()
 $startButton.Text = '启动扩展屏'
 $startButton.Location = [System.Drawing.Point]::new(16, 216)
 $startButton.Size = [System.Drawing.Size]::new(150, 42)
-$startButton.Add_Click({ Invoke-UiAction -Action { Start-FifScreen } })
+$startButton.Add_Click({ Invoke-UiAction -Operation { Start-FifScreen } })
 $form.Controls.Add($startButton)
 
 $stopButton = [System.Windows.Forms.Button]::new()
 $stopButton.Text = '停止扩展屏'
 $stopButton.Location = [System.Drawing.Point]::new(182, 216)
 $stopButton.Size = [System.Drawing.Size]::new(150, 42)
-$stopButton.Add_Click({ Invoke-UiAction -Action { Stop-FifScreen } })
+$stopButton.Add_Click({ Invoke-UiAction -Operation { Stop-FifScreen } })
 $form.Controls.Add($stopButton)
 
 $reconnectButton = [System.Windows.Forms.Button]::new()
 $reconnectButton.Text = '重新连接手机'
 $reconnectButton.Location = [System.Drawing.Point]::new(348, 216)
 $reconnectButton.Size = [System.Drawing.Size]::new(150, 42)
-$reconnectButton.Add_Click({ Invoke-UiAction -Action { Reconnect-Android } })
+$reconnectButton.Add_Click({ Invoke-UiAction -Operation { Reconnect-Android } })
 $form.Controls.Add($reconnectButton)
 
 $statusButton = [System.Windows.Forms.Button]::new()
 $statusButton.Text = '刷新状态'
 $statusButton.Location = [System.Drawing.Point]::new(514, 216)
 $statusButton.Size = [System.Drawing.Size]::new(150, 42)
-$statusButton.Add_Click({ Invoke-UiAction -Action { Refresh-Status } })
+$statusButton.Add_Click({ Invoke-UiAction -Operation { Refresh-Status } })
 $form.Controls.Add($statusButton)
 
 $logBox = [System.Windows.Forms.TextBox]::new()
@@ -1008,7 +1038,7 @@ $logBox.Font = [System.Drawing.Font]::new('Consolas', 9)
 $form.Controls.Add($logBox)
 
 $form.Add_Shown({
-    Invoke-UiAction -Action { Refresh-Status }
-    Invoke-UiAction -Action { Start-UpdateCheck -Background }
+    Invoke-UiAction -Operation { Refresh-Status }
+    Invoke-UiAction -Operation { Start-UpdateCheck -Background }
 })
 [void]$form.ShowDialog()

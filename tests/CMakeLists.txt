@@ -13,6 +13,14 @@ endfunction()
 fif_enable_test_assertions(fif-protocol-test)
 
 if(WIN32)
+  find_program(FIFSCREEN_POWERSHELL_EXECUTABLE powershell REQUIRED)
+  add_test(NAME fif-control-script-test
+    COMMAND "${FIFSCREEN_POWERSHELL_EXECUTABLE}"
+      -NoLogo -NoProfile -ExecutionPolicy Bypass
+      -File "${CMAKE_CURRENT_SOURCE_DIR}/control_script_test.ps1"
+      -ControlScript "${CMAKE_SOURCE_DIR}/scripts/fifscreen-control.ps1"
+  )
+
   add_executable(fif-pairing-crypto-test
     pairing_crypto_test.cpp
     ${CMAKE_SOURCE_DIR}/windows-host/src/pairing_crypto.cpp
