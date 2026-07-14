@@ -13,6 +13,20 @@ endfunction()
 fif_enable_test_assertions(fif-protocol-test)
 
 if(WIN32)
+  add_executable(fif-cursor-position-test cursor_position_test.cpp)
+  target_include_directories(fif-cursor-position-test PRIVATE
+    ${CMAKE_SOURCE_DIR}/windows-host/src
+  )
+  fif_enable_test_assertions(fif-cursor-position-test)
+  add_test(NAME fif-cursor-position-test COMMAND fif-cursor-position-test)
+
+  add_executable(fif-cursor-software-test cursor_software_test.cpp)
+  target_include_directories(fif-cursor-software-test PRIVATE
+    ${CMAKE_SOURCE_DIR}/windows-host/src
+  )
+  fif_enable_test_assertions(fif-cursor-software-test)
+  add_test(NAME fif-cursor-software-test COMMAND fif-cursor-software-test)
+
   find_program(FIFSCREEN_POWERSHELL_EXECUTABLE powershell REQUIRED)
   add_test(NAME fif-control-script-test
     COMMAND "${FIFSCREEN_POWERSHELL_EXECUTABLE}"

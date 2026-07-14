@@ -74,7 +74,6 @@ class GdiScreenCapturer {
   bool capture(RawFrame& frame, bool generate_rgb565 = true) const;
 
  private:
-  bool refresh_cursor_image(HCURSOR source_cursor) const;
   void draw_system_cursor() const;
 
   ScreenTarget target_;
@@ -85,15 +84,10 @@ class GdiScreenCapturer {
   HBITMAP bitmap_ = nullptr;
   HGDIOBJ old_bitmap_ = nullptr;
   void* bitmap_bits_ = nullptr;
-  mutable HCURSOR cursor_source_ = nullptr;
-  mutable HCURSOR cursor_copy_ = nullptr;
   mutable CURSORINFO last_cursor_info_{};
   mutable bool have_last_cursor_info_ = false;
   mutable unsigned int cursor_query_failures_ = 0;
-  mutable int cursor_hotspot_x_ = 0;
-  mutable int cursor_hotspot_y_ = 0;
-  mutable int cursor_width_ = 0;
-  mutable int cursor_height_ = 0;
+  mutable int last_cursor_draw_status_ = -1;
 };
 
 }  // namespace fif::host

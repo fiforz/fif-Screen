@@ -18,7 +18,15 @@ if(WIN32)
     ${CMAKE_CURRENT_BINARY_DIR}/fif-host-version.rc
     @ONLY
   )
-  target_sources(fif-host PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/fif-host-version.rc)
+  configure_file(
+    ${CMAKE_SOURCE_DIR}/packaging/windows/fif-host.manifest
+    ${CMAKE_CURRENT_BINARY_DIR}/fif-host.manifest
+    COPYONLY
+  )
+  target_sources(fif-host PRIVATE
+    ${CMAKE_CURRENT_BINARY_DIR}/fif-host-version.rc
+    ${CMAKE_CURRENT_BINARY_DIR}/fif-host.manifest
+  )
 endif()
 
 target_include_directories(fif-host PRIVATE

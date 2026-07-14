@@ -1,4 +1,6 @@
 #include "screen_capture.hpp"
+#include "cursor_position.hpp"
+#include "cursor_software.hpp"
 
 #include <objidl.h>
 #include <gdiplus.h>
@@ -18,6 +20,39 @@ namespace {
 constexpr DWORD kDisplayActive = 0x00000001;
 constexpr DWORD kDisplayPrimary = 0x00000004;
 constexpr unsigned int kCursorQueryGraceFrames = 3;
+
+enum class CursorDrawStatus {
+  kDrawn,
+  kQueryFailed,
+  kHidden,
+  kPositionFailed,
+  kOutsideTarget,
+  kDrawFailed,
+  kDrawnTargetLocalFallback,
+  kDrawnSoftwareCursor,
+};
+
+const char* cursor_draw_status_name(CursorDrawStatus status) {
+  switch (status) {
+    case CursorDrawStatus::kDrawn:
+      return "drawn";
+    case CursorDrawStatus::kQueryFailed:
+      return "query_failed";
+    case CursorDrawStatus::kHidden:
+      return "hidden_or_suppressed";
+    case CursorDrawStatus::kPositionFailed:
+      return "physical_position_failed";
+    case CursorDrawStatus::kOutsideTarget:
+      return "outside_target";
+    case CursorDrawStatus::kDrawFailed:
+      return "draw_failed";
+    case CursorDrawStatus::kDrawnTargetLocalFallback:
+      return "drawn_target_local_fallback";
+    case CursorDrawStatus::kDrawnSoftwareCursor:
+      return "drawn_software_cursor";
+  }
+  return "unknown";
+}
 
 bool contains_case_insensitive(const std::wstring& haystack, const std::wstring& needle) {
   std::wstring lower_haystack = haystack;
@@ -402,9 +437,6 @@ GdiScreenCapturer::GdiScreenCapturer(ScreenTarget target, int output_width, int 
 }
 
 GdiScreenCapturer::~GdiScreenCapturer() {
-  if (cursor_copy_) {
-    DestroyIcon(cursor_copy_);
-  }
   if (memory_dc_ && old_bitmap_ && old_bitmap_ != HGDI_ERROR) {
     SelectObject(memory_dc_, old_bitmap_);
   }
@@ -419,60 +451,31 @@ GdiScreenCapturer::~GdiScreenCapturer() {
   }
 }
 
-bool GdiScreenCapturer::refresh_cursor_image(HCURSOR source_cursor) const {
-  if (cursor_copy_ && source_cursor == cursor_source_) {
-    return true;
-  }
-
-  HCURSOR new_cursor = CopyIcon(source_cursor);
-  if (!new_cursor) {
-    return cursor_copy_ != nullptr;
-  }
-
-  int hotspot_x = 0;
-  int hotspot_y = 0;
-  int cursor_width = GetSystemMetrics(SM_CXCURSOR);
-  int cursor_height = GetSystemMetrics(SM_CYCURSOR);
-
-  ICONINFO icon_info{};
-  if (GetIconInfo(new_cursor, &icon_info)) {
-    hotspot_x = static_cast<int>(icon_info.xHotspot);
-    hotspot_y = static_cast<int>(icon_info.yHotspot);
-
-    BITMAP bitmap{};
-    if (icon_info.hbmColor &&
-        GetObjectW(icon_info.hbmColor, sizeof(bitmap), &bitmap) == sizeof(bitmap)) {
-      cursor_width = bitmap.bmWidth;
-      cursor_height = bitmap.bmHeight;
-    } else if (icon_info.hbmMask &&
-               GetObjectW(icon_info.hbmMask, sizeof(bitmap), &bitmap) == sizeof(bitmap)) {
-      cursor_width = bitmap.bmWidth;
-      cursor_height = icon_info.fIcon ? bitmap.bmHeight : bitmap.bmHeight / 2;
-    }
-
-    if (icon_info.hbmColor) {
-      DeleteObject(icon_info.hbmColor);
-    }
-    if (icon_info.hbmMask) {
-      DeleteObject(icon_info.hbmMask);
-    }
-  }
-
-  if (cursor_copy_) {
-    DestroyIcon(cursor_copy_);
-  }
-  cursor_source_ = source_cursor;
-  cursor_copy_ = new_cursor;
-  cursor_hotspot_x_ = hotspot_x;
-  cursor_hotspot_y_ = hotspot_y;
-  cursor_width_ = std::max(1, cursor_width);
-  cursor_height_ = std::max(1, cursor_height);
-  return true;
-}
-
 void GdiScreenCapturer::draw_system_cursor() const {
   CURSORINFO cursor_info{};
   cursor_info.cbSize = sizeof(cursor_info);
+  POINT physical_pos{};
+  DWORD cursor_error = ERROR_SUCCESS;
+  auto log_status = [&](CursorDrawStatus status) {
+    const int value = static_cast<int>(status);
+    if (last_cursor_draw_status_ == value) {
+      return;
+    }
+    last_cursor_draw_status_ = value;
+    std::cout << "FIFSCREEN_HOST event=cursor_state state="
+              << cursor_draw_status_name(status)
+              << " flags=" << cursor_info.flags
+              << " logical_pos=" << cursor_info.ptScreenPos.x << ","
+              << cursor_info.ptScreenPos.y
+              << " physical_pos=" << physical_pos.x << "," << physical_pos.y
+              << " target=" << target_.x << "," << target_.y << ","
+              << target_.width << "x" << target_.height;
+    if (cursor_error != ERROR_SUCCESS) {
+      std::cout << " error=" << cursor_error;
+    }
+    std::cout << "\n";
+  };
+
   if (GetCursorInfo(&cursor_info)) {
     last_cursor_info_ = cursor_info;
     have_last_cursor_info_ = true;
@@ -480,6 +483,8 @@ void GdiScreenCapturer::draw_system_cursor() const {
   } else {
     if (!have_last_cursor_info_ ||
         cursor_query_failures_ >= kCursorQueryGraceFrames) {
+      cursor_error = GetLastError();
+      log_status(CursorDrawStatus::kQueryFailed);
       return;
     }
     ++cursor_query_failures_;
@@ -488,16 +493,30 @@ void GdiScreenCapturer::draw_system_cursor() const {
 
   if ((cursor_info.flags & CURSOR_SHOWING) == 0 ||
       cursor_info.hCursor == nullptr) {
+    log_status(CursorDrawStatus::kHidden);
     return;
   }
 
-  const POINT screen_pos = cursor_info.ptScreenPos;
+  std::optional<CursorCoordinate> physical;
+  if (GetPhysicalCursorPos(&physical_pos)) {
+    physical = CursorCoordinate{physical_pos.x, physical_pos.y};
+  } else {
+    cursor_error = GetLastError();
+  }
+  const auto resolved = resolve_cursor_position(
+      CursorCoordinate{cursor_info.ptScreenPos.x, cursor_info.ptScreenPos.y},
+      physical, cursor_error,
+      CursorTargetBounds{target_.x, target_.y, target_.width, target_.height});
+  if (!resolved) {
+    log_status(CursorDrawStatus::kPositionFailed);
+    return;
+  }
+
+  const POINT screen_pos{resolved->screen.x, resolved->screen.y};
+  physical_pos = screen_pos;
   if (screen_pos.x < target_.x || screen_pos.x >= target_.x + target_.width ||
       screen_pos.y < target_.y || screen_pos.y >= target_.y + target_.height) {
-    return;
-  }
-
-  if (!refresh_cursor_image(cursor_info.hCursor) || !cursor_copy_) {
+    log_status(CursorDrawStatus::kOutsideTarget);
     return;
   }
 
@@ -507,17 +526,20 @@ void GdiScreenCapturer::draw_system_cursor() const {
       std::lround((screen_pos.x - target_.x) * scale_x));
   const int tip_y = static_cast<int>(
       std::lround((screen_pos.y - target_.y) * scale_y));
-  const int draw_x = tip_x - static_cast<int>(
-      std::lround(cursor_hotspot_x_ * scale_x));
-  const int draw_y = tip_y - static_cast<int>(
-      std::lround(cursor_hotspot_y_ * scale_y));
-  const int draw_width = std::max(
-      1, static_cast<int>(std::lround(cursor_width_ * scale_x)));
-  const int draw_height = std::max(
-      1, static_cast<int>(std::lround(cursor_height_ * scale_y)));
-
-  DrawIconEx(memory_dc_, draw_x, draw_y, cursor_copy_, draw_width, draw_height,
-             0, nullptr, DI_NORMAL);
+  const BgraSurface surface{
+      static_cast<std::uint8_t*>(bitmap_bits_), output_width_, output_height_,
+      output_width_ * 4};
+  const int scaled_system_cursor_height = std::max(
+      1, static_cast<int>(std::lround(GetSystemMetrics(SM_CYCURSOR) * scale_y)));
+  const int arrow_scale = std::max(
+      1, static_cast<int>(std::lround(scaled_system_cursor_height / 24.0)));
+  if (!draw_software_arrow(surface, tip_x, tip_y, arrow_scale)) {
+    log_status(CursorDrawStatus::kDrawFailed);
+    return;
+  }
+  log_status(resolved->used_target_local_fallback
+                 ? CursorDrawStatus::kDrawnTargetLocalFallback
+                 : CursorDrawStatus::kDrawnSoftwareCursor);
 }
 
 bool GdiScreenCapturer::capture(RawFrame& frame, bool generate_rgb565) const {
